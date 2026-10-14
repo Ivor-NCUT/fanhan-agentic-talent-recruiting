@@ -47,13 +47,15 @@ Run these phases in order.
    - Score every readable JSON in the candidate pool or every readable JD in the job pool, then sort all results. Use the LLM to review the leading results and resolve evidence-based comparisons without expanding the pool.
 6. Enrich and audit the leading pairs.
    - Execute `Information Enrichment For Selected Pairs` before drafting recommendations. JD-to-candidates enriches candidate work evidence; candidate-to-jobs enriches company and role context. Both retain the other side's provided materials.
-   - Use [职位简历匹配度审核](../job-resume-match-audit/SKILL.md) (`job-resume-match-audit`) with the JD, resume, company context, enriched sources, direction and audience. Only `匹配度高／匹配` pairs enter recommendations. For low fit or pending evidence, retain reasons and the audience's polite notification or clarification draft. Never silently substitute candidates. If installed alone, perform the hard-condition review here and disclose the unavailable audit skill; do not claim its workflow ran.
+   - Use [职位简历匹配度审核](../job-resume-match-audit/SKILL.md) (`job-resume-match-audit`) with the JD, resume, company context, enriched sources, direction, audience and known communication context. Only `匹配度高／匹配` pairs enter recommendations. For low fit or pending evidence, retain reasons and the audience's polite notification or clarification draft. Never silently substitute candidates. If installed alone, perform the hard-condition review here and disclose the unavailable audit skill; do not claim its workflow ran.
 7. Output and delivery.
    - Return ranked matches with `推荐等级`, `匹配理由`, `风险理由`, `证据引用`, and `下一步建议`.
    - For candidate-to-jobs, keep the recruiter-facing assessment separate from the candidate-facing copy. The latter must follow `Candidate Copy For Enterprise WeChat` and be directly pasteable as one message.
    - For job-to-candidates, keep the internal assessment separate from the company-facing copy. The latter must follow `Company Copy In Feishu`.
-   - When the user requests delivery, send the original file format (including HTML or ZIP) and include the original webpage, Feishu document, GitHub, or social link. A link-only candidate is valid when its extracted text supports the match.
-   - Select at most five audited high-fit candidates or jobs. Never pad with low-fit or unresolved pairs. If fewer survive, state why internally; if none survive, provide a short audience-appropriate explanation without inventing rejected individuals.
+   - Reuse the auditor's outcome-specific wording. Low fit explains the decisive job difference politely; pending evidence asks at most three material questions, not a rejection. Retain only one shared greeting and closing when aggregating. If the audit skill is unavailable, apply these same distinctions here.
+   - Read existing interest, consent to recommend to this company/role, delivered materials and verified actions from the conversation. Interest alone is not permission to share a resume. Reuse applicable explicit consent that has not been withdrawn; do not ask again. Unknown consent produces a candidate-facing confirmation draft without stopping matching. Do not claim a prepared draft has been sent or that the company has given feedback.
+   - When the user requests delivery, send the original file format (including HTML or ZIP) and include the original webpage, Feishu document, GitHub, or social link. A link-only candidate is valid when its extracted text supports the match. Before sharing identity or materials with a company, check the candidate's applicable consent and the current sending authorization; unconfirmed people remain in internal results with confirmation drafts, not the client-visible list.
+   - Select at most five audited high-fit candidates or jobs. Never pad with low-fit or unresolved pairs. If fewer survive, state why internally. After a complete query and review yields none, say “目前这批岗位里，暂时没有与您已确认条件合适的机会” or “这轮暂时没有合适人选”. If data or pagination failed, say the materials are incomplete and name the missing source; do not imply a completed search, no talent or an employer rejection.
    - Do not mass-generate rejection messages for every unselected database row. Deliver polite drafts for specified pairs or selected pairs that failed audit; never claim that a company already rejected a candidate when this is only the agent's assessment.
    - Freeze the selected names and order before composing or sending. The overview, candidate introductions, and resume files must remain consistent. Delivery does not imply Base writeback.
 
@@ -81,11 +83,11 @@ This section is mandatory for `candidate_to_jobs`. After the internal ranking, p
 
 ### Content contract
 
-- Turn every final selected JD into a short choice, not a pasted JD. Default to the top five; if more must be delivered, split them into copyable messages of at most five jobs each.
+- Turn every final selected JD into a short choice by default. Use at most five; if the user explicitly requests more, split them into copyable messages of at most five jobs each. For an already selected job or an explicit request for full JD, supply its readable original text/link and known company details separately; do not ask the candidate to choose again or claim missing attachments were delivered.
 - Keep each job to at most three short lines. Target at most 3,500 characters for the complete copy-ready message and never exceed the Enterprise WeChat 4,000-character hard limit. Count the greeting, punctuation, links, spaces, and line breaks; shorten low-value detail before delivery rather than relying on the client to truncate it. Do not pad a naturally shorter message toward 3,500 characters.
-- For each job include only: `岗位｜公司`, confirmed location/work mode and compensation when available, one brief verified company business/product context combined with the role's main task, one evidence-backed sentence on why it fits this candidate, and at most one non-blocking point to confirm. A decision-critical unknown belongs in the pending branch, not the recommendation list.
-- Translate internal `风险理由` into neutral candidate language such as `需要确认：上海线下办公，想先确认您是否考虑`。Omit low-value gaps instead of making the candidate read an audit report.
-- End with one low-effort action: ask the candidate to reply with job numbers; promise the full JD/company details only for the selected numbers.
+- For each job include only: `岗位｜公司`, confirmed location/work mode and compensation when available, one brief factual company business/product context combined with the role's main task, and one evidence-backed sentence connecting the candidate's contribution to that task. Omit low-value gaps. Decision-critical unknowns such as willingness to work in a required city belong in the pending branch, not the recommendation list.
+- End with one low-effort action for the current context: unknown interest in several jobs → reply with numbers; interest in a specific job but no sharing consent → ask whether the existing materials may be recommended to that company and role; applicable consent already known → acknowledge the agreed next step without asking again. Verified sending can be described only after it actually occurred.
+- For a specified low-fit pair, give its polite difference statement; for pending evidence, ask only the decisive questions. Reuse the audit wording, do not wrap it in a high-fit shortlist. If the candidate already declined, acknowledge known reasons or ask one preference question when none was supplied; do not promise a future search or automatic follow-up without an actual arrangement.
 - Use natural one-to-one Chinese. Use `老师` only when the existing relationship already uses it.
 
 ### Never expose in candidate copy
@@ -100,17 +102,19 @@ This section is mandatory for `candidate_to_jobs`. After the internal ranking, p
 ### Copy-ready template
 
 ```text
-{候选人称呼}您好，我结合您的经历筛了几个目前在招、匹配度比较高的机会，先把简版发您。您看看哪些值得进一步了解：
+{候选人称呼}您好，结合您的经历，有几个目前在招的机会想和您分享，先发您简版：
 
 1）{岗位}｜{公司}｜{地点/办公方式；已确认的薪酬或职级可继续写在本行，没有就省略}
 公司与岗位：{一句已知业务/产品背景与岗位核心工作；公司信息未读取就注明，不编造}
-比较适合您：{一句候选人经历与岗位的具体连接}{有关键条件时接“；需要确认：...”}
+与您的经历相关：{一句候选人具体贡献与岗位任务的连接}
 
 2）{岗位}｜{公司}
 ...
 
-您直接回复感兴趣的编号就行，比如“1、3”。我再把对应的完整 JD 和公司信息发您；如果这几个都不合适，也可以告诉我您更看重的方向、地点或薪资，我继续帮您缩小范围。
+您回复想了解的编号就行，比如“1、3”，我再把对应的完整 JD 和公司信息发您。
 ```
+
+The template above is for a first shortlist. If a specific role is already selected, replace that closing with the auditor's interest/consent-aware closing. For example, interest alone: `您愿意让我们把已有简历和相关材料推荐给{公司}的{岗位}吗？`; existing applicable consent: `好呀，就按您已确认的{公司}—{岗位}准备推荐。` The output stays copy-ready; do not expose internal consent labels or leave template placeholders.
 
 The candidate text itself is the deliverable. In Feishu, return it without a wrapper label. Outside Feishu, a wrapper label may appear before the text, but recruiter-only analysis must remain outside the copy block.
 
@@ -120,36 +124,36 @@ This section is mandatory for `job_to_candidates` when results are delivered to 
 
 ### Company-visible contract
 
-- Send only candidates who pass the role category and explicit hard conditions. Never add a weak candidate merely to reach five; say `本轮暂无达到推荐线的候选人` when none qualify.
-- For each candidate use at most three short lines: `姓名｜当前角色/年限/地点`, `值得看：` one or two verified facts, and optional `需要确认：` one decision-critical gap.
+- Send only audited high-fit candidates with applicable material-sharing consent. Never add a weak candidate merely to reach five. Unknown consent requires a confirmation draft for the operator before client delivery; do not disclose that person's identity in the company group. Confirmed no-match, incomplete evidence and awaiting consent need different wording.
+- For each candidate use at most three short lines: `姓名｜当前角色/年限/地点`, one or two sourced work facts linked to the role, and a concrete interview focus if useful. Preserve self-reported wording. A decision-critical gap belongs in pending clarification, not the recommendation.
 - Do not expose scores, ranking labels, JD IDs, retrieval counts, model names, database/writeback status, audit summaries, or `Top5`. Do not repeat the full JD or use the label `风险`.
 - Send each candidate introduction immediately before that candidate's original resume. Use a readable filename such as `{job}-{rank}-{candidate}.{ext}`; do not send duplicate copies or hash-heavy names.
-- Close once with: `如果觉得哪位候选人比较合适，可以直接 @情情，我们的实习生会帮忙联系候选人并推进约面。` Resolve and use 情情's real Feishu mention when available; do not guess an open ID.
+- Close once with: `如果您想进一步了解哪位候选人，可以直接 @情情，由我们的实习生协调后续沟通。` Resolve and use 情情's real Feishu mention when available; do not guess an open ID. This is a proposed next step, not a claim that an interview or contact has already occurred.
 
 ### One JD in the group
 
-1. Send one short header naming the role and the number of eligible candidates. State that the list was not padded when fewer than five qualify.
+1. Send one short header naming the role and the number of high-fit candidates whose materials may be shared. Keep excluded counts and filtering details internal.
 2. Send each concise candidate introduction followed immediately by the matching resume.
 3. Send the closing action sentence once after the last resume.
 
 ```text
-已按「{job_title}｜{location}」筛完候选人库。这轮有 {eligible_count} 位达到推荐线，没有为了凑满 5 人加入硬条件不符的人选。
+关于「{job_title}」，这轮有 {shareable_count} 位候选人的相关经历比较贴近岗位，供您参考：
 
 1）{candidate_name}｜{current_role_or_years}｜{location}
-值得看：{one_or_two_verified_facts}
-需要确认：{one_decision_critical_gap}
+从{简历/已确认的项目沟通}看，{specific_contribution_and_result}，与岗位的{core_task}相关。
+建议进一步聊聊{relevant_project_detail_or_interview_focus}。
 ```
 
 ### Multiple JDs in the group
 
-1. Send one compact overview in the main chat: one line per JD with its eligible count; for zero results, name the main missing hard condition.
+1. Send one compact overview in the main chat: one line per JD with its shareable high-fit count. Use “暂时没有合适人选” only for a complete review with no fit; use “还需补充关键资料” or “还需确认推荐意愿” when that is the actual situation, without revealing unconsented identities.
 2. Send one standalone header message per JD. Put that JD's candidate introductions and resumes in the header's reply thread with `im +messages-reply --reply-in-thread`; do not dump every resume into the main chat.
 3. Keep each resume in the same thread as its candidate introduction and end the overall delivery with the same `@情情` action sentence.
 
 ```text
 本轮共完成 {job_count} 个岗位的候选人筛选：
-1）{job_one}：{eligible_count} 位可推荐
-2）{job_two}：暂无达标人选，主要缺口是 {hard_requirement}
+1）{job_one}：{shareable_count} 位人选供您参考
+2）{job_two}：{按实际情况说明暂无合适人选、待补关键资料或待确认推荐意愿}
 …
 
 下面按岗位分别发送主消息，候选人介绍和简历都放在对应回复串里，方便按岗位查看。

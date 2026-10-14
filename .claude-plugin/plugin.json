@@ -1,6 +1,6 @@
 {
   "name": "fanhan-agentic-talent-recruiting",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "泛函 Agentic 人才招聘：双向查库、相关信息挖掘、匹配度审核与按受众生成推荐或委婉告知话术。",
   "author": {"name": "Ivor-NCUT"},
   "skills": [

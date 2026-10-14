@@ -1,4 +1,4 @@
 interface:
   display_name: "职位简历匹配度审核"
   short_description: "审核人岗匹配度与理由，高匹配生成推荐，低匹配生成委婉告知，缺证据时给补问"
-  default_prompt: "使用 $job-resume-match-audit，根据公司介绍、JD、简历和补充信息，输出匹配度与理由，并为适用受众生成推荐、委婉告知或关键补问话术。"
+  default_prompt: "使用 $job-resume-match-audit，根据公司介绍、JD、简历和补充信息，输出匹配度与理由，并生成适用受众可直接使用的推荐、委婉告知或关键补问话术。沿用已有兴趣与推荐同意，不重复索要材料，不把草稿写成已发送。"
