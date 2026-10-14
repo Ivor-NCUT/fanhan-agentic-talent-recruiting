@@ -1,0 +1,11 @@
+{
+  "name": "fanhan-agentic-talent-recruiting",
+  "owner": {"name": "Ivor-NCUT"},
+  "plugins": [
+    {
+      "name": "fanhan-agentic-talent-recruiting",
+      "source": "./",
+      "description": "泛函 Agentic 人才招聘合集。"
+    }
+  ]
+}

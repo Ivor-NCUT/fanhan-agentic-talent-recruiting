@@ -1,0 +1,11 @@
+{
+  "name": "fanhan-agentic-talent-recruiting",
+  "version": "0.1.0",
+  "description": "泛函 Agentic 人才招聘：统一入口、职位简历匹配度审核与双向检索匹配。",
+  "author": {"name": "Ivor-NCUT"},
+  "skills": [
+    "./skills/fanhan-agentic-talent-recruiting",
+    "./skills/job-resume-match-audit",
+    "./skills/job-resume-intelligent-matching-fanhan"
+  ]
+}

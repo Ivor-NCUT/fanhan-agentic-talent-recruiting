@@ -1,6 +1,6 @@
 ---
 name: job-resume-intelligent-matching-fanhan
-description: Use this skill whenever the user wants to match jobs/JDs/岗位 with resumes/候选人/作品集/个人网站/GitHub/社媒链接, including “上传简历找岗位”, “上传 JD 找候选人”, “跑岗位候选人匹配”, “飞书多维表格匹配”, or feedback like “这个匹配不准”. Candidate-to-job runs return a copy-ready plain-text message that fits the Enterprise WeChat 4,000-character limit; JD-to-candidate runs classify the role, rank every same-category resume JSON, select up to five eligible candidates, and deliver concise company-facing recommendations with their original resumes.
+description: Search and rank jobs for a candidate, candidates for a JD, or explicit candidate/job batches, including “上传简历找岗位”, “上传JD找候选人” and “批量匹配并交付”. Build the full same-category candidate pool, check engagement type, and deliver evidence-backed results to the requested audience. When the user has already specified one candidate and one job and asks whether they match, use job-resume-match-audit instead.
 ---
 
 # 职位 & 简历智能匹配
@@ -15,7 +15,7 @@ Use this skill to run bidirectional recruiting matching without changing model w
    - Batch: user gives a Feishu Base, SQLite database, CSV, or JSON set of candidates and jobs.
    - Feedback: user says a recommendation is wrong, asks the skill to improve, or points out a recurring mismatch.
 2. If the user already provided enough data and asked to run, execute directly. Do not ask for repeated confirmation.
-3. If writing back to a live database, show the affected table/field list once before the first write unless the user has explicitly authorized the write in the same turn.
+3. Before live writeback, identify the affected tables and fields and use the existing task authorization. Ask only for a concrete write not yet authorized; do not repeat approval for the same scope.
 4. When a JD arrives in a Feishu group, use that group as the delivery target. Otherwise require an explicit target chat before sending; matching can proceed while the destination is unresolved.
 5. When an intern invokes local Codex from Feishu, treat the normal agent reply as the delivery channel. Do not send a duplicate message to the same group through `lark-cli` unless the user explicitly asks.
 
@@ -46,6 +46,7 @@ Run these phases in order.
    - Semantic score: summarize candidate and job as comparable work evidence; compare responsibilities and outcomes.
    - Rule score: hard-condition fit, engagement type fit, seniority fit, recency, portfolio strength, and requirement coverage.
    - Score every readable JSON in the same-category pool, then sort all results by final score. Use the LLM only to review the leading results and resolve close evidence-based comparisons; never let it introduce an out-of-category candidate.
+   - In this collection, use [职位简历匹配度审核](../job-resume-match-audit/SKILL.md) (`job-resume-match-audit`) to review each selected candidate/job pair with its company context. Only `匹配` pairs enter the audited recommendation list; keep `不匹配` and `信息不足，待确认` in the internal result with their reasons. Preserve the pool gate and do not silently substitute candidates. If this skill is installed alone without the audit skill, perform the hard-condition review described here and state that the audit skill was unavailable.
 6. Output and delivery.
    - Return ranked matches with `推荐等级`, `匹配理由`, `风险理由`, `证据引用`, and `下一步建议`.
    - For candidate-to-jobs, keep the recruiter-facing assessment separate from the candidate-facing copy. The latter must follow `Candidate Copy For Enterprise WeChat` and be directly pasteable as one message.
@@ -249,10 +250,10 @@ Do not silently fall back to Workbench, SQLite, CSV, or another Base. If the Bas
 3. Follow `Company Copy In Feishu`: use the main chat for one-JD delivery; for multiple JDs, create one header per JD and use `im +messages-reply --reply-in-thread` for its candidate introductions and resume files. Use idempotency keys. Use user identity when it can write to the group; if an external-group policy returns `230027` and the bot is already a member, retry as bot.
 4. Read the target group's recent messages and verify the overview/header structure, candidate-to-resume order, and every expected file. A successful upload call alone is not delivery proof.
 
-Use bundled script for deterministic batch checks:
+Use the bundled script for repeatable preliminary batch checks. Its semantic score is a keyword/length proxy, and its LLM score is an arithmetic placeholder; the script does not verify every must-have condition, produce a final audit decision, or send messages. Review its leading pairs before delivery.
 
 ```bash
-python scripts/run_match.py --input input.json --output matches.json --top-n 5
+python "<this Skill directory>/scripts/run_match.py" --input input.json --output matches.json --top-n 5
 ```
 
 Read these references only when needed:
@@ -275,9 +276,9 @@ When the user gives feedback such as “这个结果不准”, “实习生被�
    - Evaluate current instructions against failure modes, actionability, checkpoints, and反例清单.
    - Change the smallest useful part of this skill.
    - Run deterministic script tests and any relevant eval prompts.
-5. 🔴 CHECKPOINT · Stop before live database writeback or publishing the updated skill package.
-   - If the user already authorized this exact update in the same turn, proceed.
-   - Otherwise summarize the diff and ask for confirmation.
+5. Before live writeback or publication, verify that the existing authorization covers the target, content and impact.
+   - Continue an already authorized update without asking again.
+   - For an unapproved action, prepare the reviewable diff first and ask only for that action.
 
 ## Failure Handling
 
