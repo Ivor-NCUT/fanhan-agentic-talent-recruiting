@@ -1,4 +1,4 @@
 interface:
   display_name: "职位 & 简历智能匹配"
-  short_description: "按岗位类别检索完整候选池，保留原有双向排序与交付，并复核入选人岗组合"
-  default_prompt: "使用 $job-resume-intelligent-matching-fanhan，根据我的简历或JD检索排序，并在交付推荐前核对入选组合的硬条件与证据。"
+  short_description: "JD找人或简历找岗，查库并挖掘相关信息，审核后生成公司或候选人推荐话术"
+  default_prompt: "使用 $job-resume-intelligent-matching-fanhan，根据我的简历或JD查数据库，补全候选人或公司信息，审核入选组合后生成适用受众的话术。"

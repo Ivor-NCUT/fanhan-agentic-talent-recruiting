@@ -2,29 +2,30 @@
 
 **泛函 Agentic 人才招聘**：由统一入口与独立子 Skill 组成的招聘能力合集。
 
-给出公司、职位和候选人的真实材料，Agent会选择检索匹配或单对审核，在当前对话中完成所需结果。合集保留原有双向匹配能力，新增「职位简历匹配度审核」。
+给出公司、职位和候选人的真实材料，Agent会选择双向查库或单对审核，补充与匹配有关的信息，再按受众生成推荐、委婉告知或补问话术。当前合集版本：**0.2.0**。
 
 ## 能力目录
 
 | Skill | 输入与任务 | 输出 |
 |---|---|---|
 | [泛函 Agentic 人才招聘](skills/fanhan-agentic-talent-recruiting/SKILL.md) · `fanhan-agentic-talent-recruiting` | 招聘问题、已有材料或需要衔接多个步骤 | 选择适用子 Skill 并执行 |
-| [职位简历匹配度审核](skills/job-resume-match-audit/SKILL.md) · `job-resume-match-audit` | 公司介绍 + 一个JD + 一位候选人的简历及相关信息 | 匹配／不匹配／信息不足，待确认；证据、硬条件与下一步 |
-| [职位 & 简历智能匹配](skills/job-resume-intelligent-matching-fanhan/SKILL.md) · `job-resume-intelligent-matching-fanhan` | 简历找岗位、JD找候选人、批量检索排序 | 有证据的排序、候选人话术或企业推荐交付 |
+| [职位简历匹配度审核](skills/job-resume-match-audit/SKILL.md) · `job-resume-match-audit` | 公司介绍 + 一个JD + 一位候选人的简历及相关信息；可指定受众 | 匹配度与理由；高匹配推荐、低匹配委婉告知或待确认补问 |
+| [职位 & 简历智能匹配](skills/job-resume-intelligent-matching-fanhan/SKILL.md) · `job-resume-intelligent-matching-fanhan` | JD查候选人库；简历查在招岗位库；批量检索排序 | 相关信息挖掘、审核后排序及公司版/候选人版话术 |
 
-已指定人岗组合时直接审核，不再扫描候选库。检索的高分不代表审核通过；正式推荐前核对选中的人岗组合。
+JD找人时挖掘候选人的工作证据，向公司推荐候选人；简历找岗时取得公司资料与完整JD，挖掘相关业务信息，向候选人推荐公司和岗位。两条路径在正式推荐前使用同一个审核子 Skill。已指定组合时直接审核。
 
 ```mermaid
 flowchart TD
-  A[公司、JD、简历或招聘请求] --> B{是否已指定人岗组合}
-  B -->|是| C[职位简历匹配度审核]
-  B -->|否，需要找人或找岗位| D[职位与简历智能匹配]
-  D --> E[入选组合的证据审核]
+  A[招聘请求] --> B{输入类型}
+  B -->|JD找人| D[查候选人库并挖掘工作证据]
+  B -->|简历找岗| E[查在招岗位库并挖掘公司信息]
+  B -->|已指定JD与简历| C[职位简历匹配度审核]
+  D --> C
   E --> C
-  C --> F{审核结论}
-  F -->|匹配| G[可推进针对性面试]
-  F -->|不匹配| H[说明决定性不符]
-  F -->|信息不足| I[列出关键待确认项]
+  C --> F{匹配度与理由}
+  F -->|高| G[按受众生成推荐话术]
+  F -->|低| H[按受众生成委婉告知]
+  F -->|暂无法判断| I[生成关键补问]
 ```
 
 ## 安装
@@ -55,11 +56,20 @@ npx skills add Ivor-NCUT/fanhan-agentic-talent-recruiting --skill job-resume-mat
 JD：完整职责、必须条件、加分项、工作方式。
 候选人简历：经历、项目、个人贡献、技能与成果。
 相关信息：求职类型、地点与迁移意愿、到岗、薪资、作品或沟通记录。
+话术受众：公司 / 候选人（可选；未指定时给双方草稿）。
 ```
 
-结论先给出，再逐项核对要求与证据。明确违反必须条件时判不匹配；关键证据不足时给待确认，不编造已具备的能力。缺少加分项不会自动否定匹配。
+先给匹配度和结论，再逐项核对要求与证据，并交付适用话术：
 
-审核区分简历自述、沟通确认与外部核验。公司背景只用于解释工作任务，不新增隐性门槛。不自动联系候选人、发送报告或写回数据库。
+| 匹配度 | 结论与话术 |
+|---|---|
+| 高 | 必须条件与核心任务有证据支持；生成推荐话术。 |
+| 低 | 明确必须条件不符或核心任务有决定性差异；生成委婉告知。 |
+| 暂无法判断 | 关键证据不足；给补问，不当作拒绝。 |
+
+证据置信度单独用高/中/低说明，不能当成匹配度或录用概率。默认不生成百分制审核分数，初筛高分不能覆盖硬条件。缺少加分项不会自动否定匹配。用户只要审核结论时可省略话术。
+
+审核区分简历自述、沟通确认与外部核验。公司背景只用于解释工作任务，不新增隐性门槛。生成的是草稿，不自动联系、发送、上传简历或写回数据库。
 
 ## 现有批量匹配与兼容性
 
@@ -76,7 +86,7 @@ python scripts/run_match.py --input input.json --output matches.json --top-n 5
 - [输入Schema](skills/job-resume-intelligent-matching-fanhan/schemas/match-input.schema.json)
 - [输出Schema](skills/job-resume-intelligent-matching-fanhan/schemas/match-output.schema.json)
 
-轻量脚本用于初步排序。其语义分是关键词与文本长度的代理计算，LLM分是算术占位，不能替代完整硬条件审核；输出Top-N不能直接当作已通过审核的企业推荐名单。
+轻量脚本读取本地JSON，两个方向都排除明确的实习/正职冲突，反向匹配也使用已知类别门控；类别未知时保留待复核提示。其语义分仍是关键词/长度代理，LLM分仍是算术占位。查库、主动信息挖掘、当前招聘状态验证、完整审核和话术生成由Agent按Skill执行，脚本本身不执行这些步骤；Top-N不能直接当作已审核的推荐名单。
 
 ## 目录与验证
 
@@ -94,7 +104,7 @@ tests/                                  # 现有逻辑及目录、路由与兼�
 python -m unittest discover -s tests -v
 ```
 
-审核的合成案例位于 [evals/evals.json](skills/job-resume-match-audit/evals/evals.json)。它们覆盖明确硬条件不符、关键证据不足和有依据的匹配；真实招聘质量仍需实际材料验收。
+审核的合成案例位于 [evals/evals.json](skills/job-resume-match-audit/evals/evals.json)，匹配案例位于[匹配evals](skills/job-resume-intelligent-matching-fanhan/evals/evals.json)。案例定义覆盖硬条件、信息不足、推荐与告知及双向信息挖掘；案例文件存在不代表已完成真实数据库或模型评测。真实招聘质量需实际材料验收。
 
 ## 架构参考
 

@@ -210,6 +210,8 @@ def match_one(candidate: dict[str, Any], job: dict[str, Any]) -> dict[str, Any]:
     raw_score = round(0.25 * kw + 0.30 * semantic + 0.25 * rules + 0.20 * llm_placeholder)
     score = min(raw_score, decision.cap) if decision.cap is not None else raw_score
     risks = [decision.risk] if decision.risk else []
+    if not candidate_categories(candidate):
+        risks.append("候选人职位类目缺失，需从求职意向与工作证据确认")
     if not overlap:
         risks.append("候选人与岗位关键词重合较少，需要人工复核")
     return {
@@ -263,15 +265,19 @@ def run(data: dict[str, Any]) -> dict[str, Any]:
                 "scored_rows": len(matches),
                 "selected_count": min(top_n, len(eligible)),
             })
-        return {"algorithm_version": "agentic-matching-lite-v0.3-category-gate", "direction": direction, "top_n": top_n, "pool_audit": audits, "matches": rows}
+        return {"algorithm_version": "agentic-matching-lite-v0.4-category-gate", "direction": direction, "top_n": top_n, "pool_audit": audits, "matches": rows}
 
     for candidate in data.get("candidates", []):
-        matches = [match_one(candidate, job) for job in data.get("jobs", [])]
+        wanted = set(candidate_categories(candidate))
+        # shortcut: missing categories keep the supplied pool provisional; resolve intent before recommendation.
+        job_pool = [job for job in data.get("jobs", []) if not wanted or wanted.intersection(job_categories(job))]
+        matches = [match_one(candidate, job) for job in job_pool]
+        matches = [match for match in matches if match["compatibility"] != "mismatch"]
         matches.sort(key=lambda item: item["score"], reverse=True)
         for rank, match in enumerate(matches[:top_n], 1):
             match["rank"] = rank
             rows.append(match)
-    return {"algorithm_version": "agentic-matching-lite-v0.3-category-gate", "direction": direction, "top_n": top_n, "pool_audit": audits, "matches": rows}
+    return {"algorithm_version": "agentic-matching-lite-v0.4-category-gate", "direction": direction, "top_n": top_n, "pool_audit": audits, "matches": rows}
 
 
 def main() -> None:

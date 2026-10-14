@@ -13,6 +13,36 @@ SPEC.loader.exec_module(run_match)
 
 
 class CategoryGateTest(unittest.TestCase):
+    def test_candidate_to_jobs_excludes_category_and_engagement_conflicts(self):
+        result = run_match.run({
+            "direction": "candidate_to_jobs",
+            "candidates": [{"id": "c", "role_categories": ["研发"], "engagement": "正职", "resume_text": "Python后端"}],
+            "jobs": [
+                {"id": "intern", "title": "Python实习后端", "role_categories": ["研发"], "attributes": {"type": "实习"}},
+                {"id": "other", "title": "Python增长运营", "role_categories": ["增长/运营/市场"], "attributes": {"type": "正职"}},
+                {"id": "fit", "title": "Python后端", "role_categories": ["研发"], "attributes": {"type": "正职"}},
+            ],
+        })
+        self.assertEqual([row["job_id"] for row in result["matches"]], ["fit"])
+
+    def test_candidate_to_jobs_preserves_unknown_engagement_for_review(self):
+        result = run_match.run({
+            "direction": "candidate_to_jobs",
+            "candidates": [{"id": "c", "role_categories": ["研发"], "resume_text": "Python后端"}],
+            "jobs": [{"id": "j", "title": "Python后端", "role_categories": ["研发"], "attributes": {"type": "正职"}}],
+        })
+        self.assertEqual([row["job_id"] for row in result["matches"]], ["j"])
+        self.assertEqual(result["matches"][0]["compatibility"], "risk")
+
+    def test_candidate_to_jobs_does_not_empty_pool_on_missing_category(self):
+        result = run_match.run({
+            "direction": "candidate_to_jobs",
+            "candidates": [{"id": "c", "engagement": "正职", "resume_text": "Python后端"}],
+            "jobs": [{"id": "j", "title": "Python后端", "role_categories": ["研发"], "attributes": {"type": "正职"}}],
+        })
+        self.assertEqual([row["job_id"] for row in result["matches"]], ["j"])
+        self.assertTrue(any("类目" in reason for reason in result["matches"][0]["risk_reason"]))
+
     def test_job_to_candidates_ranks_only_complete_same_category_json(self):
         data = {
             "direction": "job_to_candidates",

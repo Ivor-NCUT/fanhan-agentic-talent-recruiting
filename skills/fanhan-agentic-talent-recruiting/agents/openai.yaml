@@ -1,4 +1,4 @@
 interface:
   display_name: "泛函 Agentic 人才招聘"
-  short_description: "统一路由泛函招聘能力：审核指定人岗匹配，或从岗位库与候选人库检索排序"
+  short_description: "统一路由双向查库、信息挖掘与人岗审核，衔接推荐、委婉告知和待确认话术"
   default_prompt: "使用 $fanhan-agentic-talent-recruiting，根据我提供的公司、JD和候选人材料选择合适的招聘能力并直接执行。"
