@@ -2,7 +2,7 @@
 
 **泛函 Agentic 人才招聘**：由统一入口与独立子 Skill 组成的招聘能力合集。
 
-给出公司、职位和候选人的真实材料，Agent会选择双向查库或单对审核，补充与匹配有关的信息，再按受众生成推荐、委婉告知或补问话术。当前合集版本：**0.2.1**。
+给出公司、职位和候选人的真实材料，Agent会选择双向查库或单对审核，补充与匹配有关的信息，再按受众生成推荐、委婉告知或补问话术。当前合集版本：**0.3.0**。
 
 ## 能力目录
 
@@ -44,6 +44,16 @@ npx skills add Ivor-NCUT/fanhan-agentic-talent-recruiting --skill job-resume-mat
 
 安装整个合集时选中三个 Skill。入口名称以宿主实际显示为准；主入口与子 Skill 都可直接使用。
 本仓库也提供 `.claude-plugin/` 清单，统一登记同一组能力。
+
+## CRM 依赖与连接
+
+从 0.3.0 起，双向查库使用外部 **`recruiting-crm` Skill 对应的 Twenty CRM**，旧飞书 Base / Workbench / Teable CRM 停用。飞书仍可作为材料来源和已授权的消息交付渠道。
+
+- 查库前，宿主需能发现 `recruiting-crm`，并配置对应 Twenty 工作区的 CLI remote 或 MCP。合集不包含该外部 Skill，也不自动安装或切换工作区；缺失时明确报告，已提供的材料仍可审核。
+- 先验证连接，再从实时 metadata 发现候选人、职位、公司、分类与状态字段。当前已验证的映射见 [Twenty 字段映射](skills/job-resume-intelligent-matching-fanhan/references/twenty-field-mapping.md)，每次执行仍以工作区实际 schema 为准。
+- 工作区 URL、OAuth、API key、业务记录和附件保留在用户本地配置或 CRM，不写入本仓库。`recruiting-crm` 的平台实现保持外部依赖，不复制其 AGPL-3.0 内容。
+- 已有本地 JSON/CSV 快照仍可分析，需标注来源与时效。连接失败不自动回退旧 CRM，也不能把第一页结果当成完整候选池。
+- 本次升级更新 Skill 的查询流程；不会迁移业务数据、创建字段、触发生产匹配或自动写回/发送消息。
 
 ## 怎样使用审核 Skill
 
@@ -93,11 +103,11 @@ python scripts/run_match.py --input input.json --output matches.json --top-n 5
 实现、字段映射、输入输出Schema和原评测已放到独立能力包中：
 
 - [匹配脚本](skills/job-resume-intelligent-matching-fanhan/scripts/run_match.py)
-- [Base字段映射](skills/job-resume-intelligent-matching-fanhan/references/base-field-mapping.md)
+- [Twenty字段映射](skills/job-resume-intelligent-matching-fanhan/references/twenty-field-mapping.md)
 - [输入Schema](skills/job-resume-intelligent-matching-fanhan/schemas/match-input.schema.json)
 - [输出Schema](skills/job-resume-intelligent-matching-fanhan/schemas/match-output.schema.json)
 
-轻量脚本读取本地JSON，两个方向都排除明确的实习/正职冲突，反向匹配也使用已知类别门控；类别未知时保留待复核提示。其语义分仍是关键词/长度代理，LLM分仍是算术占位。查库、主动信息挖掘、当前招聘状态验证、完整审核和话术生成由Agent按Skill执行，脚本本身不执行这些步骤；Top-N不能直接当作已审核的推荐名单。
+轻量脚本读取规范化的本地JSON（Twenty 原始记录需先按字段映射转换），两个方向都排除明确的实习/正职冲突，反向匹配也使用已知类别门控；类别未知时保留待复核提示。其语义分仍是关键词/长度代理，LLM分仍是算术占位。查库、主动信息挖掘、当前招聘状态验证、完整审核和话术生成由Agent按Skill执行，脚本本身不执行这些步骤；Top-N不能直接当作已审核的推荐名单。
 
 ## 目录与验证
 

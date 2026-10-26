@@ -1,6 +1,6 @@
 ---
 name: job-resume-intelligent-matching-fanhan
-description: 从JD查数据库找简历，或从简历查数据库找在招JD；对入选对象挖掘候选人或公司的相关信息，审核匹配度后生成公司版候选人推荐或候选人版公司与岗位推荐。用于“上传简历找岗位”“上传JD找候选人”和批量匹配交付。已指定一个候选人与一个职位做审核时使用job-resume-match-audit。
+description: 通过 recruiting-crm 查询 Twenty CRM，从JD找简历，或从简历找在招JD；对入选对象挖掘候选人或公司的相关信息，审核匹配度后生成公司版候选人推荐或候选人版公司与岗位推荐。用于“上传简历找岗位”“上传JD找候选人”和批量匹配交付。已指定一个候选人与一个职位做审核时使用job-resume-match-audit。
 ---
 
 # 职位 & 简历智能匹配
@@ -12,10 +12,10 @@ Use this skill to run bidirectional recruiting matching without changing model w
 1. Confirm the direction:
    - Candidate to jobs: user uploads resume, portfolio, personal website, GitHub, social links, or extra notes and wants several matching jobs.
    - Job to candidates: user uploads a JD and wants candidate resumes, portfolios, and supporting materials.
-   - Batch: user gives a Feishu Base, SQLite database, CSV, or JSON set of candidates and jobs.
+   - Batch: query the current Twenty CRM through `recruiting-crm`, or use a candidate/job snapshot explicitly supplied by the user (CSV, JSON or SQLite). Label offline snapshots and do not imply live hiring status.
    - Feedback: user says a recommendation is wrong, asks the skill to improve, or points out a recurring mismatch.
 2. If the user already provided enough data and asked to run, execute directly. Do not ask for repeated confirmation.
-3. Before live writeback, identify the affected tables and fields and use the existing task authorization. Ask only for a concrete write not yet authorized; do not repeat approval for the same scope.
+3. Before live writeback, identify the affected Twenty objects, records and fields and use the existing task authorization. Ask only for a concrete write not yet authorized; do not repeat approval for the same scope.
 4. When a JD arrives in a Feishu group, use that group as the delivery target. Otherwise require an explicit target chat before sending; matching can proceed while the destination is unresolved.
 5. When an intern invokes local Codex from Feishu, treat the normal agent reply as the delivery channel. Do not send a duplicate message to the same group through `lark-cli` unless the user explicitly asks.
 
@@ -24,17 +24,17 @@ Use this skill to run bidirectional recruiting matching without changing model w
 Run these phases in order.
 
 1. Normalize inputs.
-   - Candidate fields: name, all parsed material text, original files, original links, skills, experience, education, location, availability, expected role, `实习 & 正职`.
+   - Candidate fields: name, all parsed material text, original files, original links, skills, experience, education, location, availability, expected role and confirmed employment intent. Map live Twenty fields to these meanings using the CRM reference below; `实习 & 正职` is only a legacy offline input alias.
    - Treat PDF, Word, HTML, ZIP/project files, personal websites, Feishu documents, GitHub repositories, social links, and email text as candidate evidence when present.
    - Match against extracted content from every material version, not only the current PDF or filename. Preserve each original file/link for delivery.
    - Job fields: title, company, JD text, must-have requirements, nice-to-have requirements, location, seniority, job type, hiring status.
    - Preserve source evidence snippets. Never invent missing facts.
-2. Build the database pool for the requested direction. Read live fields and paginate to completion before ranking.
-   - **JD → candidates**: classify from the existing job's `职位分类` or the full JD using `Role Category Gate`. Load every candidate whose `候选人职位类目` intersects those categories; parse JSON with `Feishu Base source` precedence. Exclude unreadable JSON and count it. Keep the JD's company context for audit.
-   - **Resume → jobs**: use the candidate's confirmed role intent and categories; when absent, infer from work evidence and label the inference. Query the jobs table for intersecting categories, full JD and hiring status. Read live status options: exclude explicitly paused/closed jobs; keep unclear status in an internal pending list and verify it before saying “目前在招”. Do not fabricate a category or scan unrelated roles to fill five choices.
-   - For each selected job, resolve its associated company record/lookup from the live schema and obtain relevant company introduction and original links. If there is no usable company relation, use an unambiguous company name and official source; do not guess a company table ID or join two companies with the same name. See `references/base-field-mapping.md`.
+2. Build the database pool for the requested direction. First execute `Twenty CRM source` below and read [Twenty field mapping](references/twenty-field-mapping.md). Verify the connection and live schema, then paginate to completion before ranking.
+   - **JD → candidates**: classify from the verified job category field or the full JD using `Role Category Gate`. Load candidate-role records whose categories intersect, applying current job-search status and JSON readiness rules from the CRM reference. Exclude unreadable or stale JSON and count it separately from non-candidates and unavailable candidates. Keep the JD's company context for audit.
+   - **Resume → jobs**: use the candidate's confirmed role intent and categories; when absent, infer from work evidence and label the inference. Query the verified job object for intersecting categories, full JD and hiring status. Read live status options: exclude explicitly paused/closed jobs; keep unclear status in an internal pending list and verify it before saying “目前在招”. Do not fabricate a category or scan unrelated roles to fill five choices.
+   - For each selected job, resolve its associated company record from the live schema and obtain relevant company introduction and original links. If there is no usable company relation, use an unambiguous company name and official source; do not guess a company object or record ID or join two companies with the same name. See [Twenty field mapping](references/twenty-field-mapping.md).
 3. Infer engagement type.
-   - Candidate type comes first from `实习 & 正职`.
+   - Candidate type comes from explicit current employment intent in the search JSON and source materials, with the latest confirmed statement taking precedence. Missing or conflicting intent stays unknown; do not infer it from a past internship.
    - Job type comes from job title, JD, explicit tags, and requirements.
    - Use the compatibility matrix below before semantic ranking.
 4. Hard-condition gate.
@@ -57,7 +57,7 @@ Run these phases in order.
    - When the user requests delivery, send the original file format (including HTML or ZIP) and include the original webpage, Feishu document, GitHub, or social link. A link-only candidate is valid when its extracted text supports the match. Before sharing identity or materials with a company, check the candidate's applicable consent and the current sending authorization; unconfirmed people remain in internal results with confirmation drafts, not the client-visible list.
    - Select at most five audited high-fit candidates or jobs. Never pad with low-fit or unresolved pairs. If fewer survive, state why internally. After a complete query and review yields none, say “目前这批岗位里，暂时没有与您已确认条件合适的机会” or “这轮暂时没有合适人选”. If data or pagination failed, say the materials are incomplete and name the missing source; do not imply a completed search, no talent or an employer rejection.
    - Do not mass-generate rejection messages for every unselected database row. Deliver polite drafts for specified pairs or selected pairs that failed audit; never claim that a company already rejected a candidate when this is only the agent's assessment.
-   - Freeze the selected names and order before composing or sending. The overview, candidate introductions, and resume files must remain consistent. Delivery does not imply Base writeback.
+   - Freeze the selected names and order before composing or sending. The overview, candidate introductions, and resume files must remain consistent. Delivery does not imply CRM writeback.
 
 ## Information Enrichment For Selected Pairs
 
@@ -161,7 +161,7 @@ This section is mandatory for `job_to_candidates` when results are delivered to 
 
 ## Role Category Gate
 
-Use the canonical matching values below; normalize the user's wording and the two tables' option aliases to these values.
+Use the canonical matching values below; normalize the user's wording and the verified CRM fields' option values and labels to these values.
 
 | User/JD wording | Canonical category |
 |---|---|
@@ -175,11 +175,11 @@ Use the canonical matching values below; normalize the user's wording and the tw
 | 首席科学家、Chief Scientist | `首席科学家` |
 | 无法归入以上类别 | `其它` |
 
-Category is a pool gate, not a score. JD-to-candidates requires `候选人职位类目` intersecting the JD categories; missing/non-intersecting candidate rows are excluded and counted. Resume-to-jobs uses the confirmed or evidence-inferred candidate categories against each job. When categories are unavailable, the local script retains input jobs with a warning for review; the live agent must establish the intended role before final recommendation.
+Category is a pool gate, not a score. JD-to-candidates requires the mapped candidate categories intersecting the JD categories; missing/non-intersecting candidate rows are excluded and counted. Resume-to-jobs uses the confirmed or evidence-inferred candidate categories against each job. When categories are unavailable, the local script retains input jobs with a warning for review; the live agent must establish the intended role before final recommendation.
 
 ## Engagement Type Gate
 
-Candidate `实习 & 正职` is not a soft preference. It is a first-order matching gate.
+Candidate employment intent is a first-order matching gate. `实习 & 正职` remains a supported name in old offline input files, not an assumed Twenty field.
 
 ### Candidate Type Normalization
 
@@ -233,41 +233,32 @@ final_score =
 Apply these caps after scoring:
 
 - Engagement hard mismatch: cap at 45/100 and mark `弱匹配`.
-- Missing candidate `实习 & 正职`: cap at 78/100 and add risk.
+- Missing candidate employment intent: cap at 78/100 and add risk.
 - Missing job type signal: cap at 82/100 and add risk.
 - Any explicit must-have failure: cap at 60/100 unless the user asks for exploratory longlist.
 
 ## Tooling
 
-### Feishu Base source
+### Twenty CRM source
 
-The default matching database is:
+The recruiting database is the Twenty workspace selected through the external `recruiting-crm` Skill. The former Feishu Base / Workbench / Teable CRM is retired; never use it as an automatic fallback.
 
-```text
-https://twoj0037lkv.feishu.cn/base/A80Xb9jOnaexcKswFkacPBoEnAf?table=tblcprcqjXs35bdq&view=vewkVFCtes
-```
+1. Locate and read the installed `$recruiting-crm` entry, then its workspace-query workflow. It owns connection, CLI/MCP discovery and record formatting. Do not copy its implementation or credentials into this collection. If unavailable, report the missing dependency and continue only with materials already supplied by the user.
+2. Verify the intended workspace and authentication before reading records. For CLI access, inspect `twenty --help`, then run `twenty auth status --no-input --json`. Use the same explicit `--remote <name>` on subsequent calls once selected. Multiple plausible workspaces require clarification, not a guess from whichever remote is default.
+3. Discover objects, fields, relations and option values with `twenty metadata` help and the commands in the field reference. Verify the candidate/job/company mapping before querying. Never assume a standard `opportunity` is a recruiting job or every `person` is a candidate.
+4. Use the connected Twenty MCP or CLI for the complete relevant pool. Inspect `twenty data list --help` and `twenty api graphql --help` for filters and cursor pagination. A successful auth check or first page is not a completed search. A page limit, failed page or repeated cursor means an incomplete pool; report that gap instead of ranking it as complete.
+5. Keep record IDs and source evidence internally. Link internal record names to the verified Twenty workspace UI origin using `/object/{objectNameSingular}/{recordId}`; do not assume a separate API host is the UI host. Client-facing copy still follows the audience contracts above and excludes internal CRM links.
 
-Use `lark-cli` with user identity and re-resolve the URL before each run; IDs and field names below are the verified baseline, not permission to assume the live schema never changes.
-
-- Base: `A80Xb9jOnaexcKswFkacPBoEnAf` (`泛函｜公司&职位&候选人`)
-- Jobs: `tblcprcqjXs35bdq` (`岗位`), category field `职位分类`
-- Candidates: `tbldGJk6awx45Chc` (`候选人`), category field `候选人职位类目`
-- Company information: resolve the jobs' company relation/lookup and company fields from the live schema; no company-table ID is assumed. Use verified official sources when a relation is unavailable.
-- Candidate JSON precedence: `候选人检索字段 JSON.文本` -> `候选人检索 JSON（Agent回填）` -> JSON attachment in `候选人检索字段 JSON.附件`
-- Original resume field: `简历`; engagement field: `实习 & 正职`; display name: `姓名 & 昵称`
-
-Read only the necessary fields and continue pagination until `has_more=false`. The Object field `候选人检索字段 JSON` is currently unsupported by OpenAPI; do not treat its omission as an empty candidate library. Parse each JSON value independently, keep the source `record_id`, and report total same-category rows, readable JSON rows, excluded rows, and scored rows.
-
-Do not silently fall back to Workbench, SQLite, CSV, or another Base. If the Base is unavailable or the category pool has no readable JSON, report the gap.
+Connection failure, absent fields or no usable JSON does not authorize a switch to another database. An explicitly supplied offline snapshot is valid for analysis, with its source/date and missing live checks stated. Schema changes, regeneration/retry flags, matching workflows and writes use the applicable `recruiting-crm` workflow only when authorized; reading records must not trigger them.
 
 ### Feishu group delivery
 
-1. Read `lark-base`, `lark-im`, and `lark-shared` before live execution.
-2. Download only the selected candidates' original attachments with `base +record-download-attachment`, using each candidate `record_id` and the `简历` file token. Keep downloads in a task-specific directory and validate returned size; validate PDF signatures when the file is PDF.
-3. Follow `Company Copy In Feishu`: use the main chat for one-JD delivery; for multiple JDs, create one header per JD and use `im +messages-reply --reply-in-thread` for its candidate introductions and resume files. Use idempotency keys. Use user identity when it can write to the group; if an external-group policy returns `230027` and the bot is already a member, retry as bot.
+1. Use Twenty for CRM records and files. Read `lark-im` and `lark-shared` only for authorized Feishu delivery; `lark-base` is not a CRM dependency.
+2. Resolve the selected candidates' original files through their verified Twenty file fields and attachment relations, following the field reference. Download through the current authorized file URL/API; never reuse a retired Base file token. Keep files in a task-specific directory, validate type and returned size, and validate PDF signatures for PDFs. Missing/expired access is a delivery gap, not permission to replace the original resume.
+3. Follow `Company Copy In Feishu`: use the main chat for one-JD delivery; for multiple JDs, create one header per JD and use `im +messages-reply --reply-in-thread` for its candidate introductions and resume files. Use idempotency keys. Use the authorized sending identity; if group policy denies access, report the restriction instead of switching identities to bypass it.
 4. Read the target group's recent messages and verify the overview/header structure, candidate-to-resume order, and every expected file. A successful upload call alone is not delivery proof.
 
-Use the bundled script for repeatable preliminary batch checks. Both directions exclude explicit engagement mismatches; known candidate categories also restrict reverse job retrieval. Its semantic score is a keyword/length proxy, and its LLM score is an arithmetic placeholder. The script consumes supplied JSON; it does not query Base, research sources, validate current hiring or every must-have, produce audit/copy, or send messages. The agent executes those phases with the available tools.
+Use the bundled script for repeatable preliminary batch checks. Both directions exclude explicit engagement mismatches; known candidate categories also restrict reverse job retrieval. Its semantic score is a keyword/length proxy, and its LLM score is an arithmetic placeholder. The script consumes supplied JSON; it does not query Twenty or any other database, research sources, validate current hiring or every must-have, produce audit/copy, or send messages. The agent executes those phases with the available tools.
 
 ```bash
 python "<this Skill directory>/scripts/run_match.py" --input input.json --output matches.json --top-n 5
@@ -275,7 +266,7 @@ python "<this Skill directory>/scripts/run_match.py" --input input.json --output
 
 Read these references only when needed:
 
-- `references/base-field-mapping.md`: verified Feishu Base field mapping and category aliases.
+- [Twenty field mapping](references/twenty-field-mapping.md): CRM object discovery, status/category gates, files and normalized batch input.
 - `schemas/match-input.schema.json`: expected local input shape.
 - `schemas/match-output.schema.json`: expected output shape.
 
@@ -301,19 +292,19 @@ When the user gives feedback such as “这个结果不准”, “实习生被�
 
 | Trigger | First response | Fallback |
 |---|---|---|
-| candidate `实习 & 正职` is empty | mark candidate type `unknown`; lower confidence | ask for clarification only if top result depends on it |
+| candidate employment intent is empty | mark candidate type `unknown`; lower confidence | ask for clarification only if top result depends on it |
 | JD type cannot be inferred | mark job type `unknown`; lower confidence | inspect job title, requirements, tags, and company notes |
 | resume or portfolio cannot be parsed | use available text and metadata | mark evidence gaps in risk reason |
 | JD category is unclear | classify from the full JD and state the evidence | do not search every category to manufacture results |
-| same-category row has no readable JSON | exclude it from scoring and count it | do not rank on filename alone |
+| same-category row has missing, unreadable or stale JSON | exclude it from scoring and count the reason | inspect source materials when authorized; do not rank on filename alone or trigger regeneration silently |
 | fewer than five eligible candidates | send every eligible candidate | do not pad from another category |
-| Feishu write fails | preserve local output JSON or CSV | report exact table, field, and record that failed |
+| CRM read/write fails | preserve completed analysis and check the actual result before retrying any write | report the affected object, field and record; do not switch to the retired CRM |
 | LLM review conflicts with hard gate | hard gate wins | include conflict in risk reason |
 
 ## Do Not
 
 - Do not train, fine-tune, distill, or modify model weights.
-- Do not let semantic similarity override `实习 & 正职` hard mismatch.
+- Do not let semantic similarity override an explicit internship/full-time mismatch.
 - Do not let semantic similarity override the role-category pool gate.
 - Do not invent portfolio claims, GitHub activity, work dates, education, or availability.
 - Do not require a PDF when readable evidence came from HTML, a webpage, a Feishu document, GitHub, or another original format.
@@ -323,7 +314,7 @@ When the user gives feedback such as “这个结果不准”, “实习生被�
 - Do not replace a missing top-five resume with a lower-ranked candidate without saying so.
 - Do not expose internal matching scores or execution status in company-facing messages.
 - Do not flood the main group with every resume when matching multiple JDs; use one reply thread per JD.
-- Do not write back to a live table after feedback iteration without an explicit writeback authorization.
+- Do not write back to live CRM records after feedback iteration without an explicit writeback authorization.
 
 ## Internal Output Template
 
@@ -348,5 +339,5 @@ After the list, include:
 Use candidate-pool counts for JD-to-candidates. For resume-to-jobs, report queried/readable JDs, explicitly closed or incompatible exclusions, pending hiring status and the audited recommendation count. Do not label those as candidate counts or claim files were sent when only drafts were generated.
 
 ```text
-候选池审计：同类候选人 {category_rows} 人；可读 JSON {readable_json_rows} 人；因 JSON 缺失/损坏排除 {excluded_rows} 人；已评分 {scored_rows} 人；已发送简历 {sent_files}/{selected_count} 份。
+候选池审计：同类候选人 {category_rows} 人；可读 JSON {readable_json_rows} 人；因 JSON 缺失/损坏/过期排除 {excluded_rows} 人；已评分 {scored_rows} 人；已发送简历 {sent_files}/{selected_count} 份。
 ```

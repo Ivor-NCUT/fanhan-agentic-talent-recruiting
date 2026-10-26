@@ -3,7 +3,7 @@
   "evals": [
     {
       "id": 1,
-      "prompt": "我上传一个候选人简历，候选人表【实习 & 正职】是“实习”，请匹配岗位库里的几个岗位。",
+      "prompt": "我上传一个候选人简历，Twenty 的 candidateSearchJson.preferences.employmentType 有候选人明确找实习的原文证据，请匹配 CRM 里的几个岗位。",
       "expected_output": "读取候选人实习状态，排除明确正职冲突的岗位；未知合作类型保留待确认，经单对审核后才能生成候选人推荐，不因高初筛分放行。",
       "files": []
     },
@@ -21,26 +21,26 @@
     },
     {
       "id": 4,
-      "prompt": "使用默认招聘Base匹配候选人，但Base读取失败。当前目录还有一个SQLite数据库，请继续。",
-      "expected_output": "报告默认Base的数据缺口，保留已完成的材料解析；不得静默切换到SQLite、Workbench、CSV或其它Base，也不得猜测匹配名单。",
+      "prompt": "使用默认 Twenty 招聘 CRM 匹配候选人，但连接读取失败。当前目录还有以前的 Base 导出和 SQLite 数据库，请继续。",
+      "expected_output": "通过 recruiting-crm 核对连接并报告实际缺口，保留已完成的材料解析；不得静默切换旧 Base、Workbench、Teable、SQLite 或 CSV，不得猜测匹配名单。只有用户明确指定该离线快照时才使用，并说明来源、时效与无法核实在招状态。",
       "files": []
     },
     {
       "id": 5,
-      "prompt": "候选人检索字段JSON这个Object列返回unsupported，候选人记录分页has_more=true。请从当前JD同类候选池完成筛选。",
-      "expected_output": "优先读取JSON文本、Agent回填文本或附件，逐条校验；继续分页直到has_more=false，不能把Object字段不可读当空库，也不能只对第一页排序后声称完整候选池。",
+      "prompt": "Twenty 候选人的 candidateSearchJson 是 RAW_JSON，部分记录为空或生成中，已读页 hasNextPage=true。请从当前 JD 同类候选池完成筛选。",
+      "expected_output": "通过 recruiting-crm 发现 person 身份、分类、状态和 JSON 字段，读取对象或独立解析 JSON 字符串，不使用旧 Base 的 Object unsupported 回退链。检查材料与分类时效，缺失、损坏和过期分别计数；使用 endCursor 分页直到 hasNextPage=false。未读完或 JSON 不可用都不等于空库，不触发重试或写回。",
       "files": []
     },
     {
       "id": 6,
-      "prompt": "把匹配到的候选人原始 PDF 简历发到飞书群。下载接口返回 HTTP 200。 入选候选人已明确同意向对应公司、岗位分享本次原始简历，且未撤回。",
-      "expected_output": "不得仅凭 HTTP 200 上传；必须核验文件类型、字节数和 PDF 文件签名，发送后回读群消息确认摘要和文件消息都存在。 实际交付前沿用已确认的适用分享同意，不重复询问，也不超出材料范围。",
+      "prompt": "从 Twenty 的 candidateResumes 读取并把匹配到的候选人原始 PDF 简历发到飞书群。下载接口返回 HTTP 200。 入选候选人已明确同意向对应公司、岗位分享本次原始简历，且未撤回。",
+      "expected_output": "从候选人的当前 Twenty FILES 或附件关系获取授权下载入口并核对归属，不使用旧 Base file token。不得仅凭 HTTP 200 上传；必须核验文件类型、字节数和 PDF 文件签名，发送后回读群消息确认摘要和文件消息都存在。 实际交付前沿用已确认的适用分享同意，不重复询问，也不超出材料范围。",
       "files": []
     },
     {
       "id": 7,
-      "prompt": "这是一个算法工程师 JD。请用指定招聘 Base 找候选人并把前五名简历发到当前飞书群。 入选候选人已明确同意向对应公司、岗位分享本次原始简历，且未撤回。",
-      "expected_output": "先把 JD 归为算法类，只完整读取候选人职位类目包含算法的所有可读简历 JSON；在同类完整候选池内应用硬条件和证据评分，排序后最多取前五名，不得跨类补齐；向当前群发送排序摘要与原始简历，并回读核验。 实际交付前沿用已确认的适用分享同意，不重复询问，也不超出材料范围。",
+      "prompt": "这是一个算法工程师 JD。请用recruiting-crm 对应的 Twenty CRM 找候选人并把前五名简历发到当前飞书群。 入选候选人已明确同意向对应公司、岗位分享本次原始简历，且未撤回。",
+      "expected_output": "先把 JD 归为算法类，先核对实时枚举，再完整读取 contactRoles 包含 CANDIDATE、求职状态适用且 candidateJobCategories 包含 ALGORITHM 的可用检索 JSON；在同类完整候选池内应用硬条件和证据评分，排序后最多取前五名，不得跨类补齐；向当前群发送排序摘要与原始简历，并回读核验。 实际交付前沿用已确认的适用分享同意，不重复询问，也不超出材料范围。",
       "files": []
     },
     {
@@ -81,7 +81,7 @@
     },
     {
       "id": 14,
-      "prompt": "虚构场景：输入简历匹配指定Base，已读第一页但后续分页报错。当前没有经过完整审核的推荐。只给可以转发给候选人的末尾话术。",
+      "prompt": "虚构场景：输入简历匹配指定 Twenty 工作区，已读第一页但后续分页报错。当前没有经过完整审核的推荐。只给可以转发给候选人的末尾话术。",
       "expected_output": "如实说明资料未读全、暂无法给完整推荐名单，并指出岗位信息尚待补全；不称已查遍、没有合适岗位，不评价人才供给，也不编造自动跟进安排。",
       "files": []
     },
@@ -101,6 +101,30 @@
       "id": 17,
       "prompt": "虚构场景：JD找人已经找到一位审核高匹配候选人，公司要求发简历，但只知道候选人有兴趣，未明确同意向该公司该岗位分享。给当前末尾话术，不实际发送。",
       "expected_output": "保留内部高匹配结果，给运营可向候选人使用的具体公司岗位推荐同意确认草稿；公司侧仅说明还需确认推荐意愿，不暴露候选人身份或私密材料，不把尚待同意说成没有合适人选。",
+      "files": []
+    },
+    {
+      "id": 18,
+      "prompt": "虚构场景：Twenty 的 people 同时有猎头、候选人和身份空白的人；候选人中有人 NOT_LOOKING。职位对象是 recruitmentJob，另有标准 opportunity。请用一份 JD 查库找人。",
+      "expected_output": "先使用 recruiting-crm 核验当前 metadata，选择 recruitmentJob 作为岗位对象；contactRoles 中 CANDIDATE 才进入候选池，身份空白待确认，不把全部 people 当候选人。NOT_LOOKING 不主动推荐；未知求职状态待确认。完整读取同类池并记录排除原因，不写字段或自动触发匹配。",
+      "files": []
+    },
+    {
+      "id": 19,
+      "prompt": "虚构场景：当前 Twenty 候选人和岗位类目值都为 ENGINEERING，姓名是 firstName/lastName 对象，jobAttributes 为 FULL_TIME/REMOTE，JD 是富文本，检索 JSON 的 skills 为 value/evidence 对象数组。准备给现有 run_match.py 做离线初筛。",
+      "expected_output": "按实时 metadata 将 ENGINEERING 映射为研发，合并姓名字符串，读取 JD 可读原文，将岗位属性解码为全职/远程的 attributes 对象。resume_json 保留检索 JSON；可选 skills 只传字符串数组。意向从明确 employmentType.value 证据获取，不从过去实习推断。先过滤状态和过期材料，再生成符合既有 Schema 的快照，不把原始记录直接传给脚本，也不声称脚本已连接 CRM。",
+      "files": []
+    },
+    {
+      "id": 20,
+      "prompt": "虚构场景：只安装了招聘合集，找不到 recruiting-crm，也没有 Twenty 连接。用户已提供公司介绍、一个 JD 和一份简历，要求判断这一对是否匹配。",
+      "expected_output": "直接走单对审核并使用已提供材料，不要求为此安装 CRM、不扫描其他数据库。只有查库分支需要 recruiting-crm；需要额外 CRM 材料时如实说明未读取。",
+      "files": []
+    },
+    {
+      "id": 21,
+      "prompt": "虚构场景：读取 Twenty 匹配记录时发现 matchingRetry 开关和 RUN/PAIR 两类 resultJson，用户只要求查当前推荐并给草稿。候选人附件下载被拒绝。",
+      "expected_output": "只读核对匹配记录类型与当前资料，沿用现有审核与分享同意边界；不切换 matchingRetry、不覆盖工作流 resultJson、不自动写回或发消息。附件权限拒绝单独报告，保留已完成草稿，不切回旧 Base 或换身份绕过。",
       "files": []
     }
   ]
