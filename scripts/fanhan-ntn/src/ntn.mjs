@@ -164,6 +164,40 @@ export async function fetchPage(pageId) {
  * 新鲜读取一个关系属性并完整翻页。
  * Notion 内联 relation 可能只给前 25 项；属性端点才是完整列表。
  */
+/** 路径段只编码原始字符，保留已经合法的 %XX，避免属性 ID 被二次编码。 */
+function encodePathSegment(value) {
+  return String(value)
+    .split(/(%[0-9A-Fa-f]{2})/)
+    .map((part, i) => (i % 2 ? part : encodeURIComponent(part)))
+    .join('');
+}
+
+function relationIdFromInline(entry, propertyName) {
+  const id = entry?.id;
+  if (typeof id !== 'string' || !id) {
+    throw new Error(`关系属性「${propertyName}」内联条目缺少关系页面 ID；拒绝猜测或静默跳过。`);
+  }
+  return id;
+}
+
+/**
+ * 关系属性端点返回的是 property_item 列表，不是内联 relation 条目。
+ * 关联页面 ID 在 item.relation.id；item.id 是属性项 ID，绝不能当页面 ID 使用。
+ */
+function relationIdFromPropertyItem(item, propertyName) {
+  if (!item || typeof item !== 'object') {
+    throw new Error(`关系属性「${propertyName}」返回了非对象 property_item；拒绝继续。`);
+  }
+  if (item.object !== 'property_item' || item.type !== 'relation') {
+    throw new Error(`关系属性「${propertyName}」返回了非 relation property_item；拒绝继续。`);
+  }
+  const id = item.relation?.id;
+  if (typeof id !== 'string' || !id) {
+    throw new Error(`关系属性「${propertyName}」的 property_item 缺少 relation.id；拒绝丢弃、猜测或使用外层属性 ID。`);
+  }
+  return id;
+}
+
 export async function readRelation(pageId, propertyName, { pageSize = 100 } = {}) {
   const page = await fetchPage(pageId);
   const prop = page.properties?.[propertyName];
@@ -173,7 +207,10 @@ export async function readRelation(pageId, propertyName, { pageSize = 100 } = {}
   if (prop.type && prop.type !== 'relation') {
     throw new Error(`属性「${propertyName}」类型为 ${prop.type}，不是 relation；拒绝写入。`);
   }
-  const initial = (prop.relation || []).map((r) => r.id).filter(Boolean);
+  if (!Array.isArray(prop.relation)) {
+    throw new Error(`关系属性「${propertyName}」没有可验证的 relation 数组；拒绝写入。`);
+  }
+  const initial = prop.relation.map((r) => relationIdFromInline(r, propertyName));
   const needsPagination = prop.has_more === true || initial.length >= 25;
   if (!needsPagination) return { ids: [...new Set(initial)], page, property: prop, paginated: false };
 
@@ -185,12 +222,22 @@ export async function readRelation(pageId, propertyName, { pageSize = 100 } = {}
     const qs = new URLSearchParams({ page_size: String(pageSize) });
     if (cursor) qs.set('start_cursor', cursor);
     const payload = await ntnJson(
-      ['api', `/v1/pages/${pageId}/properties/${propId}?${qs.toString()}`],
+      ['api', `/v1/pages/${encodePathSegment(pageId)}/properties/${encodePathSegment(propId)}?${qs.toString()}`],
       undefined,
       { retries: 3 },
     );
     assertNotIncomplete(payload, `关系属性「${propertyName}」`);
-    for (const item of payload.results || []) if (item?.id) ids.push(item.id);
+    if (payload.object && payload.object !== 'list') {
+      throw new Error(`关系属性「${propertyName}」返回 object=${payload.object}，不是 list；拒绝继续。`);
+    }
+    // 官方 retrieve-page-property 的列表类型是 property_item；内部 item.type 才是 relation。
+    if (payload.type && payload.type !== 'property_item' && payload.type !== 'relation') {
+      throw new Error(`关系属性「${propertyName}」返回 type=${payload.type}，不是 property_item/relation 列表；拒绝继续。`);
+    }
+    if (!Array.isArray(payload.results)) {
+      throw new Error(`关系属性「${propertyName}」缺少 results 数组；拒绝继续。`);
+    }
+    for (const item of payload.results) ids.push(relationIdFromPropertyItem(item, propertyName));
     if (!payload.has_more) break;
     if (!payload.next_cursor) throw new Error(`关系属性「${propertyName}」返回 has_more=true 但没有 next_cursor。`);
     cursor = payload.next_cursor;
@@ -219,37 +266,76 @@ export function extractPageId(input) {
   return `${raw.slice(0, 8)}-${raw.slice(8, 12)}-${raw.slice(12, 16)}-${raw.slice(16, 20)}-${raw.slice(20)}`;
 }
 
-/** 本地单机锁：只防同一台机器上的并发写，不能提供跨机器原子性。 */
+function pidIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    // EPERM 说明进程存在但不属于当前用户，仍按“活着”处理，不能抢锁。
+    return e.code === 'EPERM';
+  }
+}
+
+function readLockSnapshot(lockFile) {
+  try {
+    return { raw: fs.readFileSync(lockFile, 'utf8'), stat: fs.statSync(lockFile) };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 本地单机锁：只防同一台机器上的并发写，不能提供跨机器原子性。
+ * 锁文件带 owner token；过期只在 owner PID 已死亡时回收，释放只删除自己的 token。
+ */
 export function acquireLock(dir, name = 'cache', { staleMs = 5 * 60_000 } = {}) {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   try { fs.chmodSync(dir, 0o700); } catch {}
   const lockFile = path.join(dir, `${name}.lock`);
+  const token = crypto.randomBytes(16).toString('hex');
+  const owner = JSON.stringify({ pid: process.pid, token, createdAt: new Date().toISOString() });
   const tryCreate = () => {
     const fd = fs.openSync(lockFile, 'wx', 0o600);
-    fs.writeFileSync(fd, JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }));
-    fs.closeSync(fd);
+    try { fs.writeFileSync(fd, owner); } finally { fs.closeSync(fd); }
   };
+  const busy = () => new Error(`本地锁被占用：${lockFile}。另一个 fanhan-ntn 进程可能正在写；请稍后重试。`);
+
   try {
     tryCreate();
   } catch (e) {
     if (e.code !== 'EEXIST') throw e;
-    let stale = false;
-    try {
-      const st = fs.statSync(lockFile);
-      stale = Date.now() - st.mtimeMs > staleMs;
-    } catch {}
-    if (!stale) throw new Error(`本地锁被占用：${lockFile}。另一个 fanhan-ntn 进程可能正在写；请稍后重试。`);
-    try { fs.unlinkSync(lockFile); } catch {}
-    try { tryCreate(); } catch (e2) {
-      if (e2.code === 'EEXIST') throw new Error(`本地锁被占用：${lockFile}。`);
-      throw e2;
+    const snapshot = readLockSnapshot(lockFile);
+    if (!snapshot) {
+      try { tryCreate(); } catch (e2) { if (e2.code === 'EEXIST') throw busy(); throw e2; }
+    } else {
+      let info = null;
+      try { info = JSON.parse(snapshot.raw); } catch {}
+      if (info && pidIsAlive(info.pid)) throw busy();
+      const age = Date.now() - snapshot.stat.mtimeMs;
+      if (!info || age <= staleMs) throw busy();
+      // 只回收“已死亡 owner + 内容仍未变化”的陈旧锁；不删除别的进程刚创建的新锁。
+      const current = readLockSnapshot(lockFile);
+      if (!current || current.raw !== snapshot.raw) throw busy();
+      try { fs.unlinkSync(lockFile); } catch (e2) {
+        if (e2.code !== 'ENOENT') throw e2;
+      }
+      try { tryCreate(); } catch (e2) {
+        if (e2.code === 'EEXIST') throw busy();
+        throw e2;
+      }
     }
   }
+
   let released = false;
   return () => {
     if (released) return;
     released = true;
-    try { fs.unlinkSync(lockFile); } catch {}
+    try {
+      const current = JSON.parse(fs.readFileSync(lockFile, 'utf8'));
+      if (current.token !== token) return;
+      fs.unlinkSync(lockFile);
+    } catch {}
   };
 }
 

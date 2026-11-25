@@ -101,7 +101,10 @@ if (args[0] === 'api') {
     const start = Number(query.get('start_cursor') || 0);
     const slice = rel.ids.slice(start, start + size);
     const next = start + size < rel.ids.length ? String(start + size) : null;
-    out({ object: 'list', results: slice.map((rid) => ({ id: rid })), has_more: !!next, next_cursor: next });
+    const results = slice.map((rid) => rel.malformed
+      ? { object: 'property_item', type: 'relation', id: 'property-item-outer' }
+      : { object: 'property_item', type: 'relation', id: 'property-item-outer', relation: { id: rid } });
+    out({ object: 'list', type: 'property_item', results, has_more: !!next, next_cursor: next });
     process.exit(0);
   }
   fail(1, 'unsupported api call ' + args.join(' '));
@@ -170,8 +173,8 @@ export function page(id, name, props = {}) {
   };
 }
 
-export function relation(ids, { hasMore = false } = {}) {
-  return { id: 'rel', type: 'relation', relation: ids.map((id) => ({ id })), has_more: hasMore };
+export function relation(ids, { hasMore = false, id = 'rel' } = {}) {
+  return { id, type: 'relation', relation: ids.map((id) => ({ id })), has_more: hasMore };
 }
 
 export function rich(text) {

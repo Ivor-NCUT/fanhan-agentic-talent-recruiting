@@ -863,13 +863,14 @@ ${C.bold('模型凭据（provider / endpoint / key 严格绑定）')}
   auth logout                              删除 Keychain 中的 key
 
 ${C.bold('模型环境变量')}
-  FANHAN_DECIDER_PROVIDER  perplexity | deepseek | custom；不填则按 endpoint 推断
+  FANHAN_DECIDER_PROVIDER  perplexity | deepseek | custom；不填则按官方 endpoint 推断
   FANHAN_DECIDER_MODEL     默认 pplx-decider-latest
-  FANHAN_DECIDER_BASE      默认 https://api.perplexity.ai
-  FANHAN_LLM_API_KEY       显式通用 key（优先）
-  PERPLEXITY_API_KEY       仅 provider=perplexity 时使用
-  DEEPSEEK_API_KEY         仅 provider=deepseek 时使用
-  注意：不会再把 DEEPSEEK_API_KEY 静默发往 Perplexity 端点。
+  FANHAN_DECIDER_BASE      默认 https://api.perplexity.ai；官方只接受根路径或 /v1
+  FANHAN_LLM_API_KEY       显式通用 key；自定义 endpoint 必须使用
+  PERPLEXITY_API_KEY       仅官方 provider=perplexity 时使用
+  DEEPSEEK_API_KEY         仅官方 provider=deepseek 时使用
+  注意：自定义 endpoint 必须 provider=custom + FANHAN_LLM_API_KEY；
+        provider 专用 key/Keychain 不会跨 endpoint 使用，也不会静默发往其他 provider。
 
 ${C.bold('缓存与安全边界')}
   FANHAN_CACHE_STALE_MS    缓存过期阈值，默认 24 小时；list/get/status 会显示时效

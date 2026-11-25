@@ -3,13 +3,29 @@ import { readKeyFromKeychain } from './auth.mjs';
 const DEFAULT_BASE = 'https://api.perplexity.ai';
 const DEFAULT_MODEL = 'pplx-decider-latest';
 const KNOWN_PROVIDERS = new Set(['perplexity', 'deepseek', 'custom']);
+const OFFICIAL_ENDPOINTS = new Map([
+  ['https://api.perplexity.ai', { provider: 'perplexity', name: 'Perplexity' }],
+  ['https://api.deepseek.com', { provider: 'deepseek', name: 'DeepSeek' }],
+]);
+const OFFICIAL_PATHS = new Set(['', '/v1']);
 
-function providerFor(base, explicit) {
-  const p = String(explicit || '').trim().toLowerCase();
-  if (p) return KNOWN_PROVIDERS.has(p) ? p : 'custom';
-  if (base.includes('deepseek')) return 'deepseek';
-  if (base.includes('perplexity') || base === DEFAULT_BASE) return 'perplexity';
-  return 'custom';
+function endpointError(message) {
+  return new Error(`判断模型 endpoint 无效：${message}`);
+}
+
+/** 解析并校验 endpoint；认证信息、query、hash、HTTP 都在选 key 之前拒绝。 */
+function parseEndpoint(raw) {
+  let url;
+  try {
+    url = new URL(String(raw || ''));
+  } catch {
+    throw endpointError('必须是完整的 HTTPS URL');
+  }
+  if (url.protocol !== 'https:') throw endpointError('必须使用 HTTPS');
+  if (url.username || url.password) throw endpointError('不能包含 URL 账号或密码');
+  if (url.search || url.hash) throw endpointError('不能包含 query 或 hash');
+  const path = url.pathname.replace(/\/+$/, '') || '';
+  return { url, origin: url.origin, path };
 }
 
 function keyFor(provider, env, useKeychain) {
@@ -25,13 +41,44 @@ function keyFor(provider, env, useKeychain) {
 
 /**
  * 凭据严格绑定 provider / endpoint / key。
- * 不再把 DEEPSEEK_API_KEY 静默拿去请求 api.perplexity.ai。
+ * provider 特定 key 与 Keychain 只在精确匹配的官方 origin 上使用；
+ * 自定义 endpoint 只能显式使用 FANHAN_LLM_API_KEY。
  */
 export function llmConfig(env = process.env, { useKeychain = env === process.env } = {}) {
-  const base = String(env.FANHAN_DECIDER_BASE || DEFAULT_BASE).replace(/\/$/, '');
-  const provider = providerFor(base, env.FANHAN_DECIDER_PROVIDER);
+  const explicit = String(env.FANHAN_DECIDER_PROVIDER || '').trim().toLowerCase();
+  if (explicit && !KNOWN_PROVIDERS.has(explicit)) {
+    throw endpointError(`未知 provider「${explicit}」；只支持 perplexity、deepseek、custom`);
+  }
+
+  const parsed = parseEndpoint(env.FANHAN_DECIDER_BASE || DEFAULT_BASE);
+  const official = OFFICIAL_ENDPOINTS.get(parsed.origin);
+  if (official && !OFFICIAL_PATHS.has(parsed.path)) {
+    throw endpointError(`${official.name} 官方 endpoint 只接受根路径或 /v1`);
+  }
+
+  let provider;
+  let base;
+  if (official) {
+    if (explicit && explicit !== official.provider) {
+      throw endpointError(`provider=${explicit} 与官方 endpoint（${official.provider}）不一致`);
+    }
+    provider = official.provider;
+    base = parsed.origin; // 统一为 origin，post() 再拼 /v1/decisions，避免 /v1/v1/decisions
+  } else {
+    if (explicit && explicit !== 'custom') {
+      throw endpointError(`provider=${explicit} 不能使用非官方 endpoint；自定义端点必须显式 provider=custom`);
+    }
+    provider = 'custom';
+    base = `${parsed.origin}${parsed.path}`;
+  }
+
   const { key, source } = keyFor(provider, env, useKeychain);
   const model = env.FANHAN_DECIDER_MODEL || DEFAULT_MODEL;
+  const hint = key
+    ? ''
+    : provider === 'custom'
+      ? `未配置判断模型（provider=custom，endpoint=${base}）。自定义 endpoint 只接受显式 FANHAN_LLM_API_KEY，不会使用 PERPLEXITY_API_KEY / DEEPSEEK_API_KEY / Keychain。`
+      : `未配置判断模型（provider=${provider}，endpoint=${base}）。运行 fanhan-ntn auth login 存入 key，或设置与 provider 匹配的 FANHAN_LLM_API_KEY / PERPLEXITY_API_KEY / DEEPSEEK_API_KEY。`;
   return {
     configured: !!key,
     key,
@@ -40,9 +87,7 @@ export function llmConfig(env = process.env, { useKeychain = env === process.env
     provider,
     base,
     model,
-    hint: key
-      ? ''
-      : `未配置判断模型（provider=${provider}，endpoint=${base}）。运行 fanhan-ntn auth login 存入 key，或设置与 provider 匹配的 FANHAN_LLM_API_KEY / PERPLEXITY_API_KEY / DEEPSEEK_API_KEY。`,
+    hint,
   };
 }
 

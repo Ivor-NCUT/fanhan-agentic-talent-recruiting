@@ -109,3 +109,104 @@ test('judgeSingle uses the same bound configuration', async () => {
   });
   assert.equal(res.score, 25);
 });
+
+test('llm config rejects lookalike hosts and path/query tricks before using provider keys', () => {
+  const unsafe = [
+    'https://api.perplexity.ai.evil.invalid',
+    'https://evil.invalid/perplexity',
+    'https://api.perplexity.ai:444',
+    'https://api.perplexity.ai./',
+    'https://api.perplexity.ai/v1/evil',
+  ];
+  for (const base of unsafe) {
+    assert.throws(
+      () => llmConfig({ FANHAN_DECIDER_PROVIDER: 'perplexity', FANHAN_DECIDER_BASE: base, PERPLEXITY_API_KEY: 'sk-synthetic' }),
+      /endpoint|provider|official|host|https/i,
+      base,
+    );
+  }
+
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_BASE: 'https://api.perplexity.ai?next=evil.invalid', PERPLEXITY_API_KEY: 'sk-synthetic' }),
+    /endpoint|query|https/i,
+  );
+
+  const lookalike = llmConfig({ FANHAN_DECIDER_BASE: 'https://api.perplexity.ai.evil.invalid', PERPLEXITY_API_KEY: 'sk-synthetic' }, { useKeychain: false });
+  assert.equal(lookalike.configured, false);
+  assert.equal(lookalike.keySource, 'none');
+
+  const pathTrick = llmConfig({ FANHAN_DECIDER_BASE: 'https://evil.invalid/perplexity', PERPLEXITY_API_KEY: 'sk-synthetic' }, { useKeychain: false });
+  assert.equal(pathTrick.configured, false);
+  assert.equal(pathTrick.keySource, 'none');
+});
+
+test('llm config rejects insecure URLs, embedded auth, and unknown explicit providers', () => {
+  assert.throws(() => llmConfig({ FANHAN_DECIDER_BASE: 'http://api.perplexity.ai', PERPLEXITY_API_KEY: 'sk-synthetic' }), /https|secure|endpoint/i);
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_BASE: 'https://user:secret@api.perplexity.ai', PERPLEXITY_API_KEY: 'sk-synthetic' }),
+    (e) => /auth|credential|endpoint/i.test(e.message) && !e.message.includes('secret'),
+  );
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_PROVIDER: 'openai', FANHAN_DECIDER_BASE: 'https://api.openai.com', FANHAN_LLM_API_KEY: 'sk-synthetic' }),
+    /provider|unknown|未知/i,
+  );
+});
+
+test('llm config rejects provider/endpoint mismatches instead of falling back to another key', () => {
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_PROVIDER: 'deepseek', DEEPSEEK_API_KEY: 'sk-deep' }),
+    /provider|endpoint|mismatch|不一致/i,
+  );
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_PROVIDER: 'deepseek', FANHAN_DECIDER_BASE: 'https://api.perplexity.ai', DEEPSEEK_API_KEY: 'sk-deep' }),
+    /provider|endpoint|mismatch|不一致/i,
+  );
+  assert.throws(
+    () => llmConfig({ FANHAN_DECIDER_PROVIDER: 'perplexity', FANHAN_DECIDER_BASE: 'https://api.deepseek.com', PERPLEXITY_API_KEY: 'sk-perp' }),
+    /provider|endpoint|mismatch|不一致/i,
+  );
+});
+
+test('llm config requires explicit generic opt-in for custom endpoints', () => {
+  const customNoKey = llmConfig({
+    FANHAN_DECIDER_PROVIDER: 'custom',
+    FANHAN_DECIDER_BASE: 'https://llm.example.test/v1',
+    PERPLEXITY_API_KEY: 'sk-perp',
+    DEEPSEEK_API_KEY: 'sk-deep',
+  }, { useKeychain: false });
+  assert.equal(customNoKey.configured, false);
+  assert.equal(customNoKey.keySource, 'none');
+  assert.equal(customNoKey.provider, 'custom');
+
+  const custom = llmConfig({
+    FANHAN_DECIDER_PROVIDER: 'custom',
+    FANHAN_DECIDER_BASE: 'https://llm.example.test/v1',
+    FANHAN_LLM_API_KEY: 'sk-generic',
+  }, { useKeychain: false });
+  assert.equal(custom.configured, true);
+  assert.equal(custom.provider, 'custom');
+  assert.equal(custom.keySource, 'FANHAN_LLM_API_KEY');
+  assert.equal(custom.base, 'https://llm.example.test/v1');
+});
+
+test('official /v1 bases are accepted without double-appending the decisions path', async () => {
+  const cfg = llmConfig({
+    FANHAN_DECIDER_PROVIDER: 'perplexity',
+    FANHAN_DECIDER_BASE: 'https://api.perplexity.ai/v1',
+    PERPLEXITY_API_KEY: 'sk-synthetic',
+  });
+  assert.equal(cfg.configured, true);
+  assert.equal(cfg.base, 'https://api.perplexity.ai');
+
+  let seen = null;
+  await judge('job2cand', subject, [rec('a')], {
+    env: {
+      FANHAN_DECIDER_PROVIDER: 'perplexity',
+      FANHAN_DECIDER_BASE: 'https://api.perplexity.ai/v1',
+      PERPLEXITY_API_KEY: 'sk-synthetic',
+    },
+    fetchImpl: async (url, init) => { seen = { url, init }; return okResponse(); },
+  });
+  assert.equal(seen.url, 'https://api.perplexity.ai/v1/decisions');
+  assert.equal(seen.init.headers.authorization, 'Bearer sk-synthetic');
+});

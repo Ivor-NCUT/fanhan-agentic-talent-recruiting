@@ -62,7 +62,9 @@
 # 凭据（key 走 stdin 进 Keychain，不出现在命令行参数里）
 pbpaste | fanhan-ntn auth login
 export FANHAN_DECIDER_MODEL=pplx-decider-latest   # 可选，默认即此
-export FANHAN_DECIDER_BASE=https://api.perplexity.ai  # 可选
+export FANHAN_DECIDER_BASE=https://api.perplexity.ai  # 可选，官方根路径或 /v1
+# 自定义 HTTPS endpoint 必须同时设置 FANHAN_DECIDER_PROVIDER=custom
+# 并显式提供 FANHAN_LLM_API_KEY；不会借用 PERPLEXITY/DEEPSEEK key 或 Keychain。
 
 fanhan-ntn status
 fanhan-ntn sync
@@ -133,7 +135,7 @@ node scripts/fanhan-ntn/scripts/fill_job_json.mjs --yes
 
 排序只看 `fit`，其余三项作为并列参考，不做加权。`fit.score * 25` 的数值刻度保持不变；CLI 的 `level` 是「期望分四舍五入」档位，并额外输出 `modalLevel`（概率最高的众数档），二者字段名不同，不互相替换。单对约 4–5k input tokens，$0.02/1M，80 对成本约 0.7 美分。
 
-凭据严格绑定 provider / endpoint / key：`DEEPSEEK_API_KEY` 只在 provider=deepseek 时使用，绝不会被静默发往 `api.perplexity.ai`。可用 `FANHAN_DECIDER_PROVIDER` 显式指定；不填时按 endpoint 推断。测试只使用合成 key 和 mock HTTP，不读取真实 key。
+凭据严格绑定 provider / endpoint / key：provider 特定 key 与 Keychain 只用于精确匹配的官方 HTTPS origin（`api.perplexity.ai`、`api.deepseek.com`，允许根路径或 `/v1`）。`DEEPSEEK_API_KEY` 只在 provider=deepseek 时使用，绝不会被静默发往 `api.perplexity.ai`。自定义 HTTPS endpoint 必须显式 `provider=custom` + `FANHAN_LLM_API_KEY`，不会借用 provider 专用 key；lookalike 域名、query/hash、内嵌账号密码、HTTP 和未知 provider 都在选凭据前拒绝，错误信息不包含密钥。测试只使用合成 key 和 mock 服务，不读取真实 key。
 
 ## 目录
 

@@ -3,6 +3,8 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import path from 'node:path';
 import http from 'node:http';
+import https from 'node:https';
+import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { tempWorkspace, page, relation, rich, select } from './helpers.mjs';
 
@@ -66,10 +68,11 @@ function stateWith({ candidates = [], jobs = [], companies = [], fail = {}, requ
   };
 }
 
-function startServer(handler) {
-  const server = http.createServer(handler);
+function startServer(handler, tls = null) {
+  const server = tls ? https.createServer(tls, handler) : http.createServer(handler);
   return new Promise((resolve) => server.listen(0, '127.0.0.1', () => {
-    resolve({ server, url: `http://127.0.0.1:${server.address().port}` });
+    const protocol = tls ? 'https' : 'http';
+    resolve({ server, url: `${protocol}://127.0.0.1:${server.address().port}` });
   }));
 }
 
@@ -159,6 +162,13 @@ test('model partial failure is explicit, nonzero, and failed records survive top
     jobs: [jobPage('job-1', '算法工程师')],
   }));
   assert.equal(ws.run(['sync']).status, 0);
+  const keyPath = path.join(ws.root, 'test-key.pem');
+  const certPath = path.join(ws.root, 'test-cert.pem');
+  execFileSync('openssl', [
+    'req', '-x509', '-newkey', 'rsa:2048', '-nodes', '-days', '1',
+    '-keyout', keyPath, '-out', certPath, '-subj', '/CN=127.0.0.1',
+    '-addext', 'subjectAltName=IP:127.0.0.1',
+  ], { stdio: 'ignore' });
   const { server, url } = await startServer((req, res) => {
     const chunks = [];
     req.on('data', (d) => chunks.push(d));
@@ -172,13 +182,14 @@ test('model partial failure is explicit, nonzero, and failed records survive top
         res.end(goodAnswer(4));
       }
     });
-  });
+  }, { key: fs.readFileSync(keyPath), cert: fs.readFileSync(certPath) });
   try {
     const r = await ws.runAsync(['match', '--job', 'job-1', '--top', '1', '--min', '90', '--json'], {
-      FANHAN_DECIDER_PROVIDER: 'perplexity',
-      PERPLEXITY_API_KEY: 'sk-synthetic',
+      FANHAN_DECIDER_PROVIDER: 'custom',
+      FANHAN_LLM_API_KEY: 'sk-synthetic',
       FANHAN_DECIDER_BASE: url,
       FANHAN_LLM_RETRY_DELAY_MS: '0',
+      NODE_TLS_REJECT_UNAUTHORIZED: '0',
     });
     assert.notEqual(r.status, 0, 'partial model failure must be nonzero');
     const data = JSON.parse(r.stdout);

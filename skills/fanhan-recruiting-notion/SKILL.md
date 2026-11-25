@@ -10,7 +10,7 @@ description: 以 Notion 三张表（候选人库、职位 JD 库、公司库）�
 ## 前置条件
 
 1. 本机装好 Notion 官方 CLI 并登录：`ntn whoami` 能返回工作区。
-2. 判断模型凭据（Perplexity Decider）：`pbpaste | fanhan-ntn auth login`，key 经 stdin 存入 Keychain，不出现在命令行参数与日志里。凭据严格绑定 provider / endpoint / key，不会把 `DEEPSEEK_API_KEY` 静默发往 Perplexity 端点。
+2. 判断模型凭据（Perplexity Decider）：`pbpaste | fanhan-ntn auth login`，key 经 stdin 存入 Keychain，不出现在命令行参数与日志里。凭据严格绑定 provider / endpoint / key：provider 专用 key 与 Keychain 只用于精确匹配的官方 HTTPS origin（根路径或 `/v1`）；自定义 HTTPS endpoint 必须显式 `provider=custom` + `FANHAN_LLM_API_KEY`，不会借用其他 provider 的 key，也不会把 `DEEPSEEK_API_KEY` 静默发往 Perplexity 端点。
 3. 安装 CLI 本身：在 `scripts/fanhan-ntn` 下执行 `npm link`，得到 `fanhan-ntn` 命令。
 
 三张表的 data source ID 默认指向泛函自己的工作区，换工作区时用 `FANHAN_DS_CANDIDATES` / `FANHAN_DS_JOBS` / `FANHAN_DS_COMPANIES` 覆盖。
