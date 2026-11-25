@@ -1,6 +1,8 @@
 # fanhan-ntn · 泛函招聘 Notion 版 CLI
 
-把原来的 Twenty 服务端招聘 CLI 改成以 **Notion 三张表为数据源**、**大模型做判断** 的版本。
+`fanhan-ntn` 是当前唯一在线招聘数据库——**Notion 三张表**——的 CLI 入口，**大模型做判断**。旧 Twenty 服务端 CLI 仅保留为历史/离线兼容，不在当前在线路径。
+
+> **当前路径（2026-11-25 起）**：在线招聘数据只查/写 Notion。Twenty、`recruiting-crm`、旧飞书 Base 不是当前生产库，也不会在 Notion 缺字段、连接失败或无结果时自动回退。Notion CLI 未覆盖的能力按 fail-closed 报告缺口，不切换到旧库。
 
 ## 核心设计：事实与判断分离
 
@@ -34,7 +36,7 @@
 - 关系**读取**支持 >25、>100 条并完整翻页；关系**写入**按 Notion 公开 schema 的 `maxItems=100` 在发送前拒绝超限，不会静默截断或覆盖。
 - `scripts/fill_job_json.mjs` 默认 dry-run，只读缓存预览、不访问 Notion；只有显式 `--yes` 才新鲜读取并写。写前要求「职位描述」非空且与缓存一致、「职位检索 JSON」属性存在且为空；描述被清空时**不回退缓存旧描述**。PATCH 前立即再读一次并检查并发变化，写后按规范化 JSON 比较内容与哈希；任何读取/写入/复核失败都以非 0 退出。预检与 PATCH 之间仍是本机非 CAS 窗口。
 
-## 数据源
+## 当前在线数据源：Notion
 
 通过本机 Notion 官方 CLI（`ntn`）读取，无需另建 integration：
 
@@ -97,9 +99,11 @@ node scripts/fanhan-ntn/scripts/fill_job_json.mjs
 node scripts/fanhan-ntn/scripts/fill_job_json.mjs --yes
 ```
 
-## 与旧 CLI 的对应关系
+## 历史 CLI 对照（非当前路径）
 
-| 旧（Twenty） | 新（Notion） | 说明 |
+> 下表只用于理解历史命令演进。旧 Twenty 命令、`recruiting-crm` 和旧服务日志均不是当前在线入口；不要按旧命令查当前招聘库。
+
+| 旧（Twenty，历史） | 新（Notion，当前） | 说明 |
 |---|---|---|
 | `candidates upload` + `tasks` 队列 | 取消 | Notion 入库时已完成解析，没有异步流水线 |
 | `tasks list/retry` | `audit` | 变成数据体检清单 |
@@ -114,7 +118,7 @@ node scripts/fanhan-ntn/scripts/fill_job_json.mjs --yes
 - 旧服务日志、发送记录与审计流水；
 - 任何未在代码中明确实现的能力。
 
-遇到上述需求时应回到旧工具或人工流程，不要用本 CLI 的 `duplicate` 字段冒充全局去重。未实现/未验证的能力一律按 fail-closed 处理，不静默“尽量做”。
+遇到上述需求时应停止并报告具体能力缺口，或由人工确认 Notion 之外的替代流程；不得改用 Twenty / `recruiting-crm` / 旧 Base 作为当前生产库，也不要用本 CLI 的 `duplicate` 字段冒充全局去重。未实现/未验证的能力一律按 fail-closed 处理，不静默“尽量做”。
 
 ## 已知数据问题（会影响判断质量）
 

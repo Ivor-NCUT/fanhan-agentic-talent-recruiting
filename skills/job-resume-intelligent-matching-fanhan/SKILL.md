@@ -1,9 +1,13 @@
 ---
 name: job-resume-intelligent-matching-fanhan
-description: 通过 recruiting-crm 查询 Twenty CRM，从JD找简历，或从简历找在招JD；对入选对象挖掘候选人或公司的相关信息，审核匹配度后生成公司版候选人推荐或候选人版公司与岗位推荐。用于“上传简历找岗位”“上传JD找候选人”和批量匹配交付。已指定一个候选人与一个职位做审核时使用job-resume-match-audit。
+description: 历史/离线双向匹配：对用户显式提供的候选人、岗位快照（含 Twenty/CSV/JSON）做JD找人、简历找岗与批量排序，并衔接审核话术。当前唯一在线招聘库是 Notion，须使用 fanhan-recruiting-notion / fanhan-ntn；本 Skill 不查询 Twenty 作为当前生产 CRM，也不作为 Notion 缺失能力的回退。已指定一个候选人与一个职位做审核时使用job-resume-match-audit。
 ---
 
 # 职位 & 简历智能匹配
+
+> **当前路径（2026-11-25 起）**：当前唯一在线招聘数据库是 **Notion**，通过 [`fanhan-ntn`](../../scripts/fanhan-ntn/README.md) / [`fanhan-recruiting-notion`](../fanhan-recruiting-notion/SKILL.md) 访问。本 Skill 及其 Twenty/`recruiting-crm` 内容仅保留为**历史或用户显式提供的离线快照**兼容；不要把 Twenty 当作当前生产 CRM，也不要在 Notion 缺字段/连接失败时把它当回退。需要的在线查库、写回或附件能力若不在 Notion CLI 中，停止并报告缺口；不要用本 Skill 去查当前在线库。另见 [历史 Twenty 字段映射](references/twenty-field-mapping.md)。
+>
+> 本 Skill 不处理候选人 PII 的在线查询；离线分析只使用用户已提供的材料并标注来源与时效。
 
 Use this skill to run bidirectional recruiting matching without changing model weights. The skill turns candidate materials and job descriptions into structured profiles, applies hard-condition gates, ranks with evidence, and records why each match is recommended or risky.
 
@@ -12,10 +16,10 @@ Use this skill to run bidirectional recruiting matching without changing model w
 1. Confirm the direction:
    - Candidate to jobs: user uploads resume, portfolio, personal website, GitHub, social links, or extra notes and wants several matching jobs.
    - Job to candidates: user uploads a JD and wants candidate resumes, portfolios, and supporting materials.
-   - Batch: query the current Twenty CRM through `recruiting-crm`, or use a candidate/job snapshot explicitly supplied by the user (CSV, JSON or SQLite). Label offline snapshots and do not imply live hiring status.
+   - Batch: use a candidate/job snapshot explicitly supplied by the user (CSV, JSON or SQLite). Historical Twenty mappings below may be used only to interpret an explicitly supplied Twenty snapshot. Do not query Twenty as the current CRM and do not use it as a fallback; current online queries belong to `fanhan-recruiting-notion`. Label offline snapshots and do not imply live hiring status.
    - Feedback: user says a recommendation is wrong, asks the skill to improve, or points out a recurring mismatch.
 2. If the user already provided enough data and asked to run, execute directly. Do not ask for repeated confirmation.
-3. Before live writeback, identify the affected Twenty objects, records and fields and use the existing task authorization. Ask only for a concrete write not yet authorized; do not repeat approval for the same scope.
+3. This skill does not perform current live writeback. Current Notion writeback uses `fanhan-ntn link --yes` under `fanhan-recruiting-notion`. For historical/offline workflows only, identify the affected objects, records and fields and use the existing task authorization; ask only for a concrete write not yet authorized and never write through Twenty as the current path.
 4. When a JD arrives in a Feishu group, use that group as the delivery target. Otherwise require an explicit target chat before sending; matching can proceed while the destination is unresolved.
 5. When an intern invokes local Codex from Feishu, treat the normal agent reply as the delivery channel. Do not send a duplicate message to the same group through `lark-cli` unless the user explicitly asks.
 
@@ -24,15 +28,15 @@ Use this skill to run bidirectional recruiting matching without changing model w
 Run these phases in order.
 
 1. Normalize inputs.
-   - Candidate fields: name, all parsed material text, original files, original links, skills, experience, education, location, availability, expected role and confirmed employment intent. Map live Twenty fields to these meanings using the CRM reference below; `实习 & 正职` is only a legacy offline input alias.
+   - Candidate fields: name, all parsed material text, original files, original links, skills, experience, education, location, availability, expected role and confirmed employment intent. For an explicitly supplied offline snapshot, map historical Twenty fields to these meanings using the reference below. Current online fields belong to the Notion path; `实习 & 正职` is only a legacy offline input alias.
    - Treat PDF, Word, HTML, ZIP/project files, personal websites, Feishu documents, GitHub repositories, social links, and email text as candidate evidence when present.
    - Match against extracted content from every material version, not only the current PDF or filename. Preserve each original file/link for delivery.
    - Job fields: title, company, JD text, must-have requirements, nice-to-have requirements, location, seniority, job type, hiring status.
    - Preserve source evidence snippets. Never invent missing facts.
-2. Build the database pool for the requested direction. First execute `Twenty CRM source` below and read [Twenty field mapping](references/twenty-field-mapping.md). Verify the connection and live schema, then paginate to completion before ranking.
+2. Build the pool only from an explicitly supplied offline snapshot, or hand the online request to `fanhan-recruiting-notion`. The historical `Twenty CRM source` and [Twenty field mapping](references/twenty-field-mapping.md) below are not the current path; they may only interpret a supplied Twenty snapshot. For historical data, verify the snapshot schema and paginate to completion before ranking; do not query the live Twenty CRM.
    - **JD → candidates**: classify from the verified job category field or the full JD using `Role Category Gate`. Load candidate-role records whose categories intersect, applying current job-search status and JSON readiness rules from the CRM reference. Exclude unreadable or stale JSON and count it separately from non-candidates and unavailable candidates. Keep the JD's company context for audit.
    - **Resume → jobs**: use the candidate's confirmed role intent and categories; when absent, infer from work evidence and label the inference. Query the verified job object for intersecting categories, full JD and hiring status. Read live status options: exclude explicitly paused/closed jobs; keep unclear status in an internal pending list and verify it before saying “目前在招”. Do not fabricate a category or scan unrelated roles to fill five choices.
-   - For each selected job, resolve its associated company record from the live schema and obtain relevant company introduction and original links. If there is no usable company relation, use an unambiguous company name and official source; do not guess a company object or record ID or join two companies with the same name. See [Twenty field mapping](references/twenty-field-mapping.md).
+   - For each selected job in a historical/offline snapshot, resolve its associated company record from that snapshot and obtain relevant company introduction and original links. Current online company resolution uses `fanhan-recruiting-notion`. If there is no usable company relation, use an unambiguous company name and official source; do not guess a company object or record ID or join two companies with the same name. See [Twenty field mapping](references/twenty-field-mapping.md).
 3. Infer engagement type.
    - Candidate type comes from explicit current employment intent in the search JSON and source materials, with the latest confirmed statement taking precedence. Missing or conflicting intent stays unknown; do not infer it from a past internship.
    - Job type comes from job title, JD, explicit tags, and requirements.
@@ -239,26 +243,26 @@ Apply these caps after scoring:
 
 ## Tooling
 
-### Twenty CRM source
+### Twenty CRM source（historical / offline only）
 
-The recruiting database is the Twenty workspace selected through the external `recruiting-crm` Skill. The former Feishu Base / Workbench / Teable CRM is retired; never use it as an automatic fallback.
+**Not the current live path.** The current live recruiting database is Notion via `fanhan-ntn` / `fanhan-recruiting-notion`. This section documents the historical Twenty workspace integration for explicitly supplied offline snapshots only. Do not query Twenty as a current production CRM and do not treat it as a fallback when Notion lacks a capability; stop and report the Notion CLI gap. The older Feishu Base / Workbench / Teable CRM is also historical and never an automatic fallback.
 
-1. Locate and read the installed `$recruiting-crm` entry, then its workspace-query workflow. It owns connection, CLI/MCP discovery and record formatting. Do not copy its implementation or credentials into this collection. If unavailable, report the missing dependency and continue only with materials already supplied by the user.
+1. For an explicitly supplied historical snapshot only, locate the archived `$recruiting-crm` instructions if needed to interpret fields. Do not copy its implementation or credentials into this collection, and do not run it to query a current live workspace. Current online access uses Notion.
 2. Verify the intended workspace and authentication before reading records. For CLI access, inspect `twenty --help`, then run `twenty auth status --no-input --json`. Use the same explicit `--remote <name>` on subsequent calls once selected. Multiple plausible workspaces require clarification, not a guess from whichever remote is default.
 3. Discover objects, fields, relations and option values with `twenty metadata` help and the commands in the field reference. Verify the candidate/job/company mapping before querying. Never assume a standard `opportunity` is a recruiting job or every `person` is a candidate.
 4. Use the connected Twenty MCP or CLI for the complete relevant pool. Inspect `twenty data list --help` and `twenty api graphql --help` for filters and cursor pagination. A successful auth check or first page is not a completed search. A page limit, failed page or repeated cursor means an incomplete pool; report that gap instead of ranking it as complete.
 5. Keep record IDs and source evidence internally. Link internal record names to the verified Twenty workspace UI origin using `/object/{objectNameSingular}/{recordId}`; do not assume a separate API host is the UI host. Client-facing copy still follows the audience contracts above and excludes internal CRM links.
 
-Connection failure, absent fields or no usable JSON does not authorize a switch to another database. An explicitly supplied offline snapshot is valid for analysis, with its source/date and missing live checks stated. Schema changes, regeneration/retry flags, matching workflows and writes use the applicable `recruiting-crm` workflow only when authorized; reading records must not trigger them.
+Connection failure, absent fields or no usable JSON does not authorize a switch to another database, and Notion failure does not authorize a switch to Twenty. An explicitly supplied offline snapshot is valid for analysis, with its source/date and missing live checks stated. This historical workflow must not perform current live schema changes, regeneration/retry flags, matching workflows or writes.
 
 ### Feishu group delivery
 
-1. Use Twenty for CRM records and files. Read `lark-im` and `lark-shared` only for authorized Feishu delivery; `lark-base` is not a CRM dependency.
+1. For an explicitly supplied historical/offline snapshot, use its Twenty-derived records/files only as supplied materials. Current online records/files must use the Notion path; if Notion CLI cannot provide the file, stop and report the gap. Read `lark-im` and `lark-shared` only for authorized Feishu delivery; `lark-base` is not a CRM dependency.
 2. Resolve the selected candidates' original files through their verified Twenty file fields and attachment relations, following the field reference. Download through the current authorized file URL/API; never reuse a retired Base file token. Keep files in a task-specific directory, validate type and returned size, and validate PDF signatures for PDFs. Missing/expired access is a delivery gap, not permission to replace the original resume.
 3. Follow `Company Copy In Feishu`: use the main chat for one-JD delivery; for multiple JDs, create one header per JD and use `im +messages-reply --reply-in-thread` for its candidate introductions and resume files. Use idempotency keys. Use the authorized sending identity; if group policy denies access, report the restriction instead of switching identities to bypass it.
 4. Read the target group's recent messages and verify the overview/header structure, candidate-to-resume order, and every expected file. A successful upload call alone is not delivery proof.
 
-Use the bundled script for repeatable preliminary batch checks. Both directions exclude explicit engagement mismatches; known candidate categories also restrict reverse job retrieval. Its semantic score is a keyword/length proxy, and its LLM score is an arithmetic placeholder. The script consumes supplied JSON; it does not query Twenty or any other database, research sources, validate current hiring or every must-have, produce audit/copy, or send messages. The agent executes those phases with the available tools.
+Use the bundled script for repeatable preliminary checks on explicitly supplied offline snapshots. Both directions exclude explicit engagement mismatches; known candidate categories also restrict reverse job retrieval. Its semantic score is a keyword/length proxy, and its LLM score is an arithmetic placeholder. The script consumes supplied JSON; it does not query Twenty, Notion or any other database, research sources, validate current hiring or every must-have, produce audit/copy, or send messages. Current online matching belongs to `fanhan-recruiting-notion`.
 
 ```bash
 python "<this Skill directory>/scripts/run_match.py" --input input.json --output matches.json --top-n 5
@@ -266,7 +270,7 @@ python "<this Skill directory>/scripts/run_match.py" --input input.json --output
 
 Read these references only when needed:
 
-- [Twenty field mapping](references/twenty-field-mapping.md): CRM object discovery, status/category gates, files and normalized batch input.
+- [Twenty field mapping](references/twenty-field-mapping.md): historical/offline-only object discovery, status/category gates, files and normalized batch input.
 - `schemas/match-input.schema.json`: expected local input shape.
 - `schemas/match-output.schema.json`: expected output shape.
 
@@ -284,7 +288,7 @@ When the user gives feedback such as “这个结果不准”, “实习生被�
    - Evaluate current instructions against failure modes, actionability, checkpoints, and反例清单.
    - Change the smallest useful part of this skill.
    - Run deterministic script tests and any relevant eval prompts.
-5. Before live writeback or publication, verify that the existing authorization covers the target, content and impact.
+5. Before current Notion writeback or publication, verify that the existing authorization covers the target, content and impact. Current live writeback uses `fanhan-ntn link --yes` under `fanhan-recruiting-notion`; never route it through Twenty.
    - Continue an already authorized update without asking again.
    - For an unapproved action, prepare the reviewable diff first and ask only for that action.
 
@@ -314,7 +318,7 @@ When the user gives feedback such as “这个结果不准”, “实习生被�
 - Do not replace a missing top-five resume with a lower-ranked candidate without saying so.
 - Do not expose internal matching scores or execution status in company-facing messages.
 - Do not flood the main group with every resume when matching multiple JDs; use one reply thread per JD.
-- Do not write back to live CRM records after feedback iteration without an explicit writeback authorization.
+- Do not write back to current Notion records after feedback iteration without an explicit writeback authorization; Twenty is not a current writeback target.
 
 ## Internal Output Template
 

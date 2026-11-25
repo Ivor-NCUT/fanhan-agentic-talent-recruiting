@@ -1,7 +1,7 @@
 {
   "name": "fanhan-agentic-talent-recruiting",
   "version": "0.3.0",
-  "description": "泛函 Agentic 人才招聘：通过 recruiting-crm 查询 Twenty，挖掘相关信息、审核匹配度并按受众生成推荐或委婉告知话术。",
+  "description": "泛函 Agentic 人才招聘：当前唯一在线招聘库为 Notion，通过 fanhan-ntn / fanhan-recruiting-notion 检索、审核并安全写回关系；Twenty/recruiting-crm 与旧 Base 仅作历史/离线兼容，不作为回退。",
   "author": {
     "name": "Ivor-NCUT"
   },

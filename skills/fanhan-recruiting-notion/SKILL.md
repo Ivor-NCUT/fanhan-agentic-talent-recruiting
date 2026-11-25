@@ -1,9 +1,11 @@
 ---
 name: fanhan-recruiting-notion
-description: 以 Notion 三张表（候选人库、职位 JD 库、公司库）为数据源做招聘双向检索与匹配判断。用户要拿 Notion 里的候选人找岗位、拿 JD 找候选人、需要可复现的匹配分数与档位、或要把匹配结果写回 Notion 关系字段时使用。数据还在 Twenty 时不要用本 Skill，改用 $recruiting-crm 相关子 Skill。
+description: 当前唯一在线招聘库：以 Notion 三张表（候选人库、职位 JD 库、公司库）做招聘双向检索与匹配判断。用户要拿 Notion 里的候选人找岗位、拿 JD 找候选人、需要可复现的匹配分数与档位、或要把匹配结果写回 Notion 关系字段时使用。不要改用 Twenty / $recruiting-crm 或旧 Base；Notion 未覆盖的能力停止并报告缺口。
 ---
 
 # 泛函招聘 Notion 版检索与匹配
+
+> **当前唯一在线招聘数据库（2026-11-25 起）**：候选人、职位、公司只通过本 Skill 和 `scripts/fanhan-ntn` 查/写 Notion。Twenty、`recruiting-crm`、旧飞书 Base 是历史或用户显式提供的离线快照，不是当前生产库，也不作为 Notion 缺少能力时的回退。遇到无法在 Notion CLI 完成的在线操作，停止并报告缺口。
 
 用 `scripts/fanhan-ntn` 这个 CLI 读写 Notion 三张表。CLI 只做事实层：取数、归一、硬性排除、把原始材料交给判断模型；**分数全部由判断模型给出，CLI 不做加权**。
 
@@ -65,6 +67,6 @@ fanhan-ntn explain "<候选人>" "<职位>" --raw
 - **职类口径**：未知职类保留、不强行归入“其它”；岗位类目与候选人跨度过大或被判断为不兼容时才排除，用 `--any-category` 可放开，但要在结论里说明放开了。运营/增长/市场按相邻职类处理，不给未知职类硬扣默认值。
 - **状态缺失不等于在招**：岗位状态缺失默认排除，不默认“招聘中”；需要时显式 `--include-unknown-status`。
 - **描述与 JSON 双来源**：当前 Notion「职位描述」优先，历史检索 JSON 只作对照并标出差异；`get --job` 默认展示完整当前描述，不静默截断或覆盖。
-- **不是旧系统完整替代**：本 Skill 不提供邮箱/手机号/邮件线程级去重、跟进附件归档、旧服务日志/发送流水，也不声称实现这些能力；遇到这些需求回到旧工具或人工流程。
+- **不是旧系统完整替代，也不回退**：本 Skill 不提供邮箱/手机号/邮件线程级去重、跟进附件归档、旧服务日志/发送流水，也不声称实现这些能力。遇到这些在线需求应停止并报告能力缺口，或由人工确认 Notion 之外的替代流程；不得改用 Twenty / `recruiting-crm` / 旧 Base 作为当前生产库，也不要用本 CLI 的 `duplicate` 字段冒充全局去重。用户显式提供的离线快照只能按离线材料分析，并标注来源、时效与未核实的在招状态。
 - **补 JSON 默认 dry-run**：`scripts/fanhan-ntn/scripts/fill_job_json.mjs` 默认只读缓存预览、不访问 Notion；显式 `--yes` 才会新鲜读取，要求描述非空且与缓存一致、JSON 属性存在且为空，PATCH 前再检查并发变化，写后比较规范化 JSON 内容/哈希；失败非 0 退出。
 - **未验证的线上 schema**：仓库内测试使用 fake `ntn` / mock HTTP，不代表生产 Notion 字段、权限、并发与模型端点已经验证；上线前需在目标工作区核对。

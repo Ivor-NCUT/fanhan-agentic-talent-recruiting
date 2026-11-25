@@ -3,8 +3,8 @@
 - 分支：`fix/notion-cli-safety-20261125`
 - 基线：PR #1 head `a457c58`
 - 目标集成分支：`feat/notion-recruiting-cli`
-- 范围：仅 `scripts/fanhan-ntn`、对应测试、Skill/插件清单与本文档。没有新增运行时依赖，没有修改旧 Python 业务工具。
-- 结论：反馈中的 10 类问题均已逐项复现并修复；第二轮复核又修复了关系属性 `property_item` 解析、provider/endpoint 严格绑定和本地锁过期回收 3 个发布阻塞项；第三轮复核修复了 safety 契约 fail-open、`fill_job_json` 回填过期描述/弱复核、关系写入超过 Notion 上限的问题。最终 Node 测试 70/70、Python 测试 7/7 通过。生产 Notion schema、真实模型端点和跨机器并发**未验证**，见“未验证边界”。
+- 范围：`scripts/fanhan-ntn`、对应测试、Skill/插件清单、当前流程文档与本文档。没有新增运行时依赖，没有修改旧 Python 业务工具逻辑。
+- 结论：反馈中的 10 类问题均已逐项复现并修复；第二轮复核又修复了关系属性 `property_item` 解析、provider/endpoint 严格绑定和本地锁过期回收 3 个发布阻塞项；第三轮复核修复了 safety 契约 fail-open、`fill_job_json` 回填过期描述/弱复核、关系写入超过 Notion 上限的问题；第四轮文档/策略统一声明 Notion 为唯一当前在线招聘库，Twenty/`recruiting-crm`/旧 Base 仅作历史/离线兼容。最终 Node 测试 70/70、Python 测试 7/7 通过。生产 Notion schema、真实模型端点和跨机器并发**未验证**，见“未验证边界”。
 
 ## 1. 证据等级
 
@@ -229,6 +229,18 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 
 对应测试：`link --yes fails closed when global safety protections are not configured`、`link honours mapped duplicate/seeking fields and validates their values`、`link rejects unsupported safety field types...`、`link --yes rejects empty or unknown seeking...`、`link --mark-recommended validates all safety and relation prerequisites before any PATCH`、`link fails closed before any PATCH when a relation would exceed the Notion write limit`、`updatePage rejects relation writes above the Notion array limit...`、`fill_job_json refuses a cleared fresh description...`、`fill_job_json refuses missing or non-rich-text target JSON properties`、`fill_job_json fails when post-write content differs...`、`fill_job_json rechecks immediately before PATCH...`。
 
+### 3.13 第四轮文档/策略：Notion 唯一在线招聘库
+
+文件：根 `README.md`、`scripts/fanhan-ntn/README.md`、四个 Skill 的 `SKILL.md`/路由描述、`.claude-plugin/plugin.json`、历史字段映射。
+
+- 按 2026-11-25 18:28 的用户口径，当前合集在线招聘数据统一为 **Notion**，通过 `fanhan-ntn` / `fanhan-recruiting-notion` 访问。
+- Twenty / `recruiting-crm` / 旧飞书 Base / Workbench / Teable 只保留为历史或用户显式提供的离线快照兼容；当前在线路径不自动回退，也不因 Notion 缺字段/连接失败/无结果而改查旧库。
+- 当前流程不再使用“数据还在 Twenty 时改用 `$recruiting-crm`”“Notion 是可选数据源”等表述；删除对旧在线入口的推荐。
+- `job-resume-intelligent-matching-fanhan` 与 `job-resume-match-audit` 增加顶部 current-path banner，历史正文、离线脚本、Twenty 字段映射与旧 Python 工具均保留，不删除、不迁移。
+- 历史 Twenty/Base 字段映射明确标注“历史/离线兼容”；`plugin.json` 描述与 `openai.yaml` 路由描述不再声称查询 Twenty。
+- Notion CLI 未覆盖的在线能力（邮箱/手机号/线程去重、跟进附件、服务日志/发送流水、自动消息发送等）统一 fail-closed：停止并报告缺口，不引导改用旧 Twenty；文档不编造生产 schema，不包含候选人 PII。
+- 该轮为文档/策略变更，未改运行时代码；Node 70/70、Python 7/7 仍通过，日志 `round4-final-node-tests.log`、`round4-final-python-tests.log`。
+
 ## 4. 端到端 mock 覆盖
 
 测试使用 `test/helpers.mjs` 内的 fake `ntn` 子进程和临时 HOME，覆盖：
@@ -263,6 +275,7 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 | 第三轮修复后聚焦 | 同上 | **39 tests，39 pass，0 fail，exit 0** |
 | 全量 Node（最终） | `node --test scripts/fanhan-ntn/test/*.test.mjs` | **70 tests，70 pass，0 fail，exit 0** |
 | Python（最终） | `python3 -m unittest discover -s tests -v` | **7 tests，OK，exit 0** |
+| 第四轮（文档/策略） | Node 全量 + Python 全量 + 语法检查 | **Node 70/70、Python 7/7，均 exit 0** |
 
 测试夹具/契约调整共 7 处，均为修正“测试输入与契约不一致”，不是放宽生产断言：
 
@@ -281,9 +294,10 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 3. **候选人 + 多岗位写入不是事务**：候选人关系写成功、后续岗位失败时无法整体回滚；但会非 0 退出并明确报告失败，不会谎报全部成功。
 4. **真实模型端点未验证**：Decisions API 的鉴权、限流、响应结构只用 mock；测试不读取、不发送真实 key。
 5. **生产数据质量未重新统计**：README 中 136/576、38/97 是历史统计，可能已变化。
-6. **旧 Python 工具未改**：只修了插件清单和 Skill 文档；旧工具逻辑未在本轮回归范围内。
-7. **未实现能力**：邮箱/手机号/线程级去重、跟进附件、服务日志/发送流水，明确不在本 CLI 内。
+6. **旧 Python 工具逻辑未改**：只修了插件清单、Skill 文档与历史映射标注；旧 `run_match.py` 的业务逻辑未在本轮回归范围内。
+7. **未实现能力**：邮箱/手机号/线程级去重、跟进附件、服务日志/发送流水、自动消息发送，明确不在本 CLI 内；这些能力按 fail-closed 报缺口，不回退旧库。
 8. **关系写入上限依据公开 schema**：100 项来自 Notion 公开 page property value schema 的 `maxItems=100`，未对目标工作区逐字段验证；读取仍支持 >100 页。
+9. **Notion 能力覆盖未做生产验收**：文档只声明当前 CLI 已实现的能力；Notion 原生是否支持更复杂的附件、去重或发送流程未在真实工作区验证。
 
 ## 7. 复现命令
 
@@ -322,6 +336,8 @@ done
 - `/workspace/recruiting-cli-fix-20261125/round3-final-focused.log`
 - `/workspace/recruiting-cli-fix-20261125/round3-final-node-tests.log`
 - `/workspace/recruiting-cli-fix-20261125/round3-final-python-tests.log`
+- `/workspace/recruiting-cli-fix-20261125/round4-final-node-tests.log`
+- `/workspace/recruiting-cli-fix-20261125/round4-final-python-tests.log`
 
 ## 8. 变更文件
 
@@ -332,9 +348,11 @@ done
 - `scripts/fanhan-ntn/src/llm.mjs`：provider/key 绑定、并发校验、部分失败、档位命名。
 - `scripts/fanhan-ntn/scripts/fill_job_json.mjs`：默认 dry-run、新鲜读取、冲突、锁、非 0 失败。
 - `scripts/fanhan-ntn/test/*.test.mjs`：70 个 Node 回归测试。
-- `scripts/fanhan-ntn/README.md`、`skills/fanhan-recruiting-notion/SKILL.md`：安全边界与能力范围。
-- `.claude-plugin/plugin.json`、`skills/fanhan-recruiting-notion/agents/openai.yaml`：Skill 注册。
+- `scripts/fanhan-ntn/README.md`、`skills/fanhan-recruiting-notion/SKILL.md`：安全边界、能力范围与 Notion 唯一在线路径。
+- 根 `README.md`、`skills/fanhan-agentic-talent-recruiting/SKILL.md`、`skills/job-resume-intelligent-matching-fanhan/SKILL.md`、`skills/job-resume-match-audit/SKILL.md`：当前路径 banner、历史/离线分流、fail-closed 缺口说明。
+- `.claude-plugin/plugin.json`、各 Skill `agents/openai.yaml`：Skill 注册与路由描述。
+- `references/twenty-field-mapping.md`、`references/base-field-mapping.md`：历史/离线兼容标注。
 
 ## 9. 结论
 
-在隔离环境、fake `ntn`、mock HTTP 和合成数据下，10 类反馈、第二轮 3 个发布阻塞项、第三轮 safety/fill/关系上限问题均完成“基线失败 → 修复 → 定向回归 → 全量回归”。没有执行任何生产 Notion 写入、真实模型调用、push、PR、merge 或部署。生产 schema、真实模型、跨机器并发与 PATCH 前非 CAS 窗口仍需在目标工作区单独验证。
+在隔离环境、fake `ntn`、mock HTTP 和合成数据下，10 类反馈、第二轮 3 个发布阻塞项、第三轮 safety/fill/关系上限问题均完成“基线失败 → 修复 → 定向回归 → 全量回归”；第四轮完成 Notion 唯一在线库的文档/策略收口。没有执行任何生产 Notion/Twenty 写入、真实模型调用、push、PR、merge 或部署。生产 schema、真实模型、跨机器并发与 PATCH 前非 CAS 窗口仍需在目标工作区单独验证。
