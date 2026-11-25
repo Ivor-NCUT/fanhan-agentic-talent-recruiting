@@ -2,72 +2,104 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import crypto from 'node:crypto';
-import { updatePage } from '../src/ntn.mjs';
-import { extractCities } from '../src/parse.mjs';
+import { updatePage, fetchPage, acquireLock, ensurePrivateDir } from '../src/ntn.mjs';
+import { extractCities, choice, categoryKey } from '../src/parse.mjs';
 
 const R = path.join(os.homedir(), '.fanhan-ntn');
-const jobs = JSON.parse(fs.readFileSync(path.join(R, 'jobs.json'), 'utf8')).records;
+const jobsFile = path.join(R, 'jobs.json');
+let jobs;
+try {
+  jobs = JSON.parse(fs.readFileSync(jobsFile, 'utf8')).records;
+} catch (e) {
+  console.error(`读取职位缓存失败：${e.message}。先运行 fanhan-ntn sync。`);
+  process.exit(1);
+}
 
-const CAT = {
-  '研发': 'engineering',
-  '产品经理': 'product',
-  '增长/市场/运营': 'growth_marketing',
-  '商务/销售': 'sales_business',
-  '算法': 'data_ai',
-  '数据分析': 'data_ai',
-  '设计': 'design',
-  'HR': 'other',
-  '其它': 'other',
-};
-
+const args = new Set(process.argv.slice(2));
+const write = args.has('--yes') && !args.has('--dry');
 const sha = (s) => crypto.createHash('sha256').update(s).digest('hex');
 
-/** Notion rich_text 单项上限 2000 字符，按 1800 切块 */
 function richTextChunks(str) {
   const out = [];
-  for (let i = 0; i < str.length; i += 1800) {
-    out.push({ type: 'text', text: { content: str.slice(i, i + 1800) } });
-  }
+  for (let i = 0; i < str.length; i += 1800) out.push({ type: 'text', text: { content: str.slice(i, i + 1800) } });
   return out;
 }
 
+const rt = (prop) => (prop?.rich_text || []).map((t) => t.plain_text || t.text?.content || '').join('');
+
 const targets = jobs.filter((j) => !j.hasJson && j.description && j.description.trim().length > 20);
 console.log(`待生成岗位检索 JSON：${targets.length} 条`);
+if (!write) console.log('当前为预演（默认 dry-run）。确认后加 --yes 才会读取最新页面并写入。');
 
-const dry = process.argv.includes('--dry');
 let ok = 0;
 const failed = [];
-
+let release = () => {};
+if (write) {
+  ensurePrivateDir(R);
+  release = acquireLock(R, 'fill-job-json');
+}
+try {
 for (const j of targets) {
-  const locations = extractCities(`${j.description}\n${j.name}`);
-  const payload = {
-    title: j.name,
-    category: CAT[j.category] || null,
-    locations,
-    workModes: [],
-    sourceHash: sha(`${j.name}\n${j.description}`),
-    description: j.description,
-    preferences: j.preference || null,
-    originalText: `${j.name}\n${locations.join('/')}\n\n${j.description}`,
-  };
-  const text = JSON.stringify(payload, null, 2);
-  if (dry) {
-    console.log(`- ${j.name} | ${text.length} 字 | category=${payload.category} | locations=${locations.join('/') || '无'}`);
+  let fresh;
+  try {
+    fresh = await fetchPage(j.id);
+    const props = fresh.properties || {};
+    const existing = rt(props['职位检索 JSON']).trim();
+    if (existing) {
+      failed.push({ name: j.name, error: '冲突：Notion 当前「职位检索 JSON」已存在且非空，拒绝覆盖陈旧生成结果。' });
+      continue;
+    }
+    const freshDesc = rt(props['职位描述']).trim();
+    if (freshDesc && freshDesc !== String(j.description || '').trim()) {
+      failed.push({ name: j.name, error: '冲突：Notion 当前「职位描述」与缓存不一致，先 fanhan-ntn sync 再生成。' });
+      continue;
+    }
+  } catch (e) {
+    failed.push({ name: j.name, error: `读取最新页面失败：${e.message}` });
     continue;
   }
+
+  const props = fresh.properties || {};
+  const name = (props['职位名称']?.title || []).map((t) => t.plain_text || t.text?.content || '').join('') || j.name;
+  const description = rt(props['职位描述']).trim() || j.description;
+  const locations = extractCities(`${description}\n${name}`);
+  const catKey = categoryKey(choice(props['职位类目'])) || j.categoryKey || null;
+  const preference = rt(props['职位招聘偏好']) || j.preference || null;
+  const payload = {
+    title: name,
+    category: catKey,
+    locations,
+    workModes: [],
+    sourceHash: sha(`${name}\n${description}`),
+    description,
+    preferences: preference,
+    originalText: `${name}\n${locations.join('/')}\n\n${description}`,
+  };
+  const text = JSON.stringify(payload, null, 2);
+
+  if (!write) {
+    console.log(`- ${name} | ${text.length} 字 | category=${catKey || '未知'} | locations=${locations.join('/') || '无'}`);
+    continue;
+  }
+
   try {
     await updatePage(j.id, { '职位检索 JSON': { rich_text: richTextChunks(text) } });
+    const after = await fetchPage(j.id);
+    const got = rt(after.properties?.['职位检索 JSON']).trim();
+    if (!got) throw new Error('写入后复核失败：最新页面「职位检索 JSON」仍为空');
     ok++;
-    process.stdout.write(`\r写入 ${ok}/${targets.length} …`);
+    process.stdout.write(`\r写入并复核 ${ok}/${targets.length} …`);
   } catch (e) {
-    failed.push({ name: j.name, error: e.message.slice(0, 160) });
+    failed.push({ name, error: e.message.slice(0, 220) });
   }
 }
+} finally {
+  release();
+}
 
-if (!dry) {
-  console.log(`\n完成：成功 ${ok}/${targets.length}`);
-  if (failed.length) {
-    console.log('失败清单：');
-    for (const f of failed) console.log(`  ${f.name}: ${f.error}`);
-  }
+if (write) console.log(`\n完成：成功 ${ok}/${targets.length}`);
+if (failed.length) {
+  console.log('失败/冲突清单：');
+  for (const f of failed) console.log(`  ${f.name}: ${f.error}`);
+  process.exitCode = 1;
 }
