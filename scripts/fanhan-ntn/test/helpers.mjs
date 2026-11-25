@@ -79,6 +79,12 @@ if (args[0] === 'api') {
       if (value.rich_text) page.properties[name].rich_text = value.rich_text;
       if (value.checkbox !== undefined) page.properties[name].checkbox = value.checkbox;
     }
+    const override = state.postWriteRichText?.[id] || {};
+    for (const [name, text] of Object.entries(override)) {
+      page.properties[name] ??= { id: name, type: 'rich_text' };
+      page.properties[name].type = 'rich_text';
+      page.properties[name].rich_text = [{ type: 'text', text: { content: text } }];
+    }
     out(page);
     process.exit(0);
   }
@@ -87,6 +93,16 @@ if (args[0] === 'api') {
     const page = state.pages?.[id];
     if (!page) fail(1, 'page not found ' + id);
     if (state.failPageIds?.includes(id)) fail(1, 'fixture page failure ' + id);
+    state.getCounts ??= {};
+    state.getCounts[id] = (state.getCounts[id] || 0) + 1;
+    const mutation = state.mutatePageOnGet?.[id];
+    if (mutation && state.getCounts[id] >= (mutation.at || 2)) {
+      if (mutation.removeProperty) delete page.properties[mutation.removeProperty];
+      if (mutation.richText) {
+        const [prop, text] = mutation.richText;
+        page.properties[prop] = { id: prop, type: 'rich_text', rich_text: [{ type: 'text', text: { content: text } }] };
+      }
+    }
     out(structuredClone(page));
     process.exit(0);
   }

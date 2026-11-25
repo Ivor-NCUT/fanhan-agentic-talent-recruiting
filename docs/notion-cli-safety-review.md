@@ -4,7 +4,7 @@
 - 基线：PR #1 head `a457c58`
 - 目标集成分支：`feat/notion-recruiting-cli`
 - 范围：仅 `scripts/fanhan-ntn`、对应测试、Skill/插件清单与本文档。没有新增运行时依赖，没有修改旧 Python 业务工具。
-- 结论：反馈中的 10 类问题均已逐项复现并修复；第二轮复核又修复了关系属性 `property_item` 解析、provider/endpoint 严格绑定和本地锁过期回收 3 个发布阻塞项。最终 Node 测试 59/59、Python 测试 7/7 通过。生产 Notion schema、真实模型端点和跨机器并发**未验证**，见“未验证边界”。
+- 结论：反馈中的 10 类问题均已逐项复现并修复；第二轮复核又修复了关系属性 `property_item` 解析、provider/endpoint 严格绑定和本地锁过期回收 3 个发布阻塞项；第三轮复核修复了 safety 契约 fail-open、`fill_job_json` 回填过期描述/弱复核、关系写入超过 Notion 上限的问题。最终 Node 测试 70/70、Python 测试 7/7 通过。生产 Notion schema、真实模型端点和跨机器并发**未验证**，见“未验证边界”。
 
 ## 1. 证据等级
 
@@ -49,6 +49,18 @@ exit 1
 
 日志：`/workspace/recruiting-cli-fix-20261125/round2-baseline-focused.log`。失败覆盖：关系属性端点把外层 `property_item.id` 当关联页面 ID、>100 条关系只保留 26 条、缺少 `relation.id` 不报错、已编码属性 ID 二次编码、lookalike provider 主机/路径伪装/HTTP/未知 provider 未拒绝、provider 与 endpoint 不一致仍选 key、官方 `/v1` 未归一化、live owner 的陈旧锁被抢、release 删除他人 token 的锁。
 
+第三轮 safety / fill / 关系上限先补测试再修复，基线为：
+
+```text
+node --test scripts/fanhan-ntn/test/cli.test.mjs scripts/fanhan-ntn/test/ntn.test.mjs
+tests 37
+pass 29
+fail 8
+exit 1
+```
+
+日志：`/workspace/recruiting-cli-fix-20261125/round3-baseline-focused.log`。失败覆盖：缺全局 safety 配置仍写、mapped duplicate/seeking 未生效、空/未知求职状态被当安全、`--mark-recommended` 缺关系前置仍先 PATCH、写关系超过 Notion 100 项上限未拦截、fill 清空描述后回填缓存旧描述、缺失/错误类型 JSON 属性被当空、写后内容不一致仍报成功。
+
 基线失败覆盖了全部 10 类反馈，主要包括：
 
 - `link --yes` 使用缓存关系、顺序写入丢前一次新增、关系只读内联 25 条；
@@ -74,7 +86,9 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 - `--yes` 每次新鲜 `GET` 候选人/岗位页面，并读取关系属性端点，完整跟随 `has_more`/`next_cursor`，不再只依赖内联的 25 条。
 - 关系属性端点返回的是 `property_item` 列表：关联页面 ID 只取嵌套的 `item.relation.id`，绝不把外层 `item.id`（属性项 ID）当页面 ID；缺少 `relation.id`、非 `relation` item、非法列表结构都 fail-closed，不静默丢项。内联条目（`page.properties.*.relation[].id`）与属性端点 wire shape 分开处理。已百分号编码的属性 ID 原样保留，避免二次编码。
 - 写入前把“新鲜关系 + 本次新增”合并去重；顺序执行时第二次写入能看到第一次的结果。
-- 写入前验证候选人「是否重复」「求职状态」字段存在且值安全；岗位状态必须新鲜可读且为「招聘中」。
+- 写入前按 `safety` 映射验证「重复」「求职状态」及全局「不推荐/撤回」字段：字段名可配置，缺字段、空值、未知值、非明确否/未命中值、未支持类型都拒绝，不把空 select/未知文本当安全。
+- `--yes` 在任何 PATCH 前要求全局 `doNotRecommend` / `withdrawn` 显式配置；`--mark-recommended` 还必须在任何 PATCH 前完整验证推荐公司属性/公司关系，并预检所有计划写入。
+- 写入前验证岗位状态必须新鲜可读且为「招聘中」；关系数组超过 Notion PATCH 公开上限 100 项时，在第一个 PATCH 前拒绝，避免静默截断/覆盖。
 - 写入后重新读取关系并逐项复核；任何写入/复核失败都以非 0 退出，不打印“已成功”。
 - 同一台机器用带 owner token 的 `wx` 锁文件串行化；陈旧锁只有在 owner PID 已死亡且内容未变化时才回收，live owner 即使超过 5 分钟也不抢锁；release 只删除自己 token 的锁。**这是有界的本机锁，不是服务端 CAS**，文档和 CLI 输出均不声称跨机器原子性。
 - 全局「不推荐/撤回」字段只有在 `~/.fanhan-ntn/config.json` 的 `safety` 显式配置真实字段名时才启用；字段缺失或命中保护值即拒绝，不猜测字段。
@@ -100,7 +114,8 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 - 候选池默认排除：重复候选人、明确不求职/撤回、已推荐过目标公司；`--include-duplicates` / `--include-not-seeking` / `--include-recommended` 可显式放开。
 - 岗位状态缺失不再默认“招聘中”；默认排除，`--include-unknown-status` 可放开。
 - `status` / `audit` 显示安全字段是“已配置”还是“未配置”。未配置的全局保护不会假装存在。
-- `link --yes` 缺少基础安全字段时 fail-closed；显式配置全局字段后，缺失/命中即拒绝。
+- `link --yes` 缺少基础安全字段或全局字段时 fail-closed；显式配置后，缺失/空值/未知值/命中保护/未支持类型都拒绝。
+- `safety` 中显式配置但为空/非字符串的字段名视为无效，不回退到默认字段；默认字段只在该配置项未出现时使用。
 
 对应测试：`pool exposes duplicate, not-seeking and already-recommended exclusions`、`pool excludes missing job status...`、相关 `link` 安全测试。
 
@@ -133,7 +148,7 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 文件：`src/cli.mjs`、`src/parse.mjs`
 
 - `status` / `list` / `get` 输出缓存同步时间、距今多久、是否超过 `FANHAN_CACHE_STALE_MS`（默认 24h）。
-- 写路径不依赖旧缓存做安全结论：`link --yes` 和 `fill_job_json --yes` 都新鲜读取页面。
+- 写路径不依赖旧缓存做安全结论：`link --yes` 和 `fill_job_json --yes` 都新鲜读取页面；fill 的 dry-run 只读缓存预览，不访问 Notion。
 - 岗位状态缺失不默认 active；默认排除。
 - `select` 和 `status` 两种 Notion 属性形态都通过 `choice()` 读取；字段缺失返回 `null`，不编造默认值。
 - README 明确：生产 schema 未在本仓库验证。
@@ -173,19 +188,21 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 
 对应测试：`llm config binds provider, endpoint and key explicitly`、`llm config never silently uses a DeepSeek key against the Perplexity endpoint`、`llm config rejects lookalike hosts and path/query tricks before using provider keys`、`llm config rejects insecure URLs, embedded auth, and unknown explicit providers`、`llm config rejects provider/endpoint mismatches instead of falling back to another key`、`llm config requires explicit generic opt-in for custom endpoints`、`official /v1 bases are accepted without double-appending the decisions path`。
 
-### 3.10 `fill_job_json.mjs` 默认 dry-run
+### 3.10 `fill_job_json.mjs` 默认 dry-run 与严格写后复核
 
 文件：`scripts/fill_job_json.mjs`
 
-- 默认只打印将要写入的内容，不 PATCH。
-- 显式 `--yes` 才写；写前逐岗位新鲜 `fetchPage`：
-  - 已有非空「职位检索 JSON」→ 冲突；
-  - 当前职位描述与缓存不一致 → 冲突；
-  - 读取/写入/写后复核失败 → 非 0 退出。
-- 写入时持有本机锁；写入后重新读取校验。默认 dry-run 不拿锁、不联网写。
-- rich_text 按 1800 字符分块，避免 Notion 单段上限。
+- 默认只读缓存预览，不读 Notion、不 PATCH、不拿锁；只有显式 `--yes` 才写。
+- `--yes` 逐岗位新鲜 `fetchPage`，并严格要求：
+  - 「职位描述」属性存在、类型为 `rich_text`、当前值非空且与缓存一致；为空/缺失时拒绝，**不回退到缓存旧描述**；
+  - 「职位检索 JSON」属性存在、类型为 `rich_text`、当前值为空；缺失/错误类型不再当空；
+  - 已有非空 JSON 或描述与缓存不一致 → 冲突。
+- 生成后、PATCH 前立即再读一次页面，重新验证描述/JSON 仍满足条件，并比较 `last_edited_time`；预检后被并发修改则中止。
+- PATCH 后重新读取，解析实际 JSON，按规范化 JSON 比较期望 payload 与哈希；仅“非空”不算成功，内容不一致/非法 JSON 都非 0 退出。
+- 写入时持有本机锁；rich_text 按 1800 字符分块。
+- 预检与 PATCH 之间仍有一个非 CAS 窗口；没有 Notion 事务/条件写时无法完全消除，已在文档中保留该边界。
 
-对应测试：`fill_job_json defaults to dry-run, requires --yes, verifies fresh state and exits nonzero on conflict`。
+对应测试：`fill_job_json defaults to dry-run...`、`fill_job_json refuses a cleared fresh description...`、`fill_job_json refuses missing or non-rich-text target JSON properties`、`fill_job_json fails when post-write content differs...`、`fill_job_json rechecks immediately before PATCH...`。
 
 ### 3.11 第二轮发布阻塞项
 
@@ -197,6 +214,20 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 - 本地锁加入 owner token 与 live PID 检查：live owner 即使锁文件超过 5 分钟也不回收；只有 owner 已死亡且内容未变化才回收；release 只删自己 token 的锁。仍是**有界的本机锁**，不是跨机器 CAS。
 
 对应测试：`readRelation paginates ...`、`readRelation preserves more than 100 relations ...`、`readRelation tolerates an already percent-encoded property id ...`、`readRelation fails closed on property-item results ...`、`readRelation fails closed on malformed inline relation entries`、`llm config rejects lookalike hosts ...`、`llm config rejects insecure URLs ...`、`llm config rejects provider/endpoint mismatches ...`、`llm config requires explicit generic opt-in ...`、`official /v1 bases ...`、`local lock does not steal a stale lock ...`、`local lock reclaims ...`、`local lock release never deletes ...`。
+
+### 3.12 第三轮安全契约 / 严格回填 / 关系上限
+
+文件：`src/cli.mjs`、`src/ntn.mjs`、`scripts/fill_job_json.mjs`、`test/*.mjs`
+
+- `safetyContract` 的 `duplicate` / `seeking` / `recommendedCompanies` / `doNotRecommend` / `withdrawn` 统一规范化；显式空值/非字符串不会回退默认，视为缺失。
+- `assertCandidateSafety` 使用配置后的真实字段名，不再硬编码「是否重复」「求职状态」；支持 checkbox/number/select/status/rich_text/multi_select，未知类型直接拒绝。
+- 安全值必须可解释：checkbox 必须是显式 bool；select/status 空值不能当安全；未知文本不能绕过；`不重复`/`未撤回` 等明确否值不会被“重复/撤回”子串误判；不求职/已撤回/未知求职状态都拒绝。
+- `link --yes` 在读取/第一个 PATCH 前验证全局 safety 配置；`--mark-recommended` 在第一个 PATCH 前读取并验证推荐公司属性、岗位公司关系、所有计划写入的关系数组上限，缺任何前置都零写入。
+- `link` dry-run 只做本地预演，不读取/写入 Notion；缺全局配置时明确提示 `--yes` 会拒绝。
+- Notion 公开 page property schema 的 relation 写入数组 `maxItems=100`；`updatePage` 统一在发送前拒绝 >100 项，`link` 还在所有计划写入前一次性预检，避免先写候选人再在岗位写入时才发现超限。关系**读取**仍支持 >25、>100 并完整翻页。
+- `fill_job_json` 严格描述/属性 schema、PATCH 前二次读取、写后规范化 JSON 哈希比较；dry-run 零 PATCH/零 Notion 读取。
+
+对应测试：`link --yes fails closed when global safety protections are not configured`、`link honours mapped duplicate/seeking fields and validates their values`、`link rejects unsupported safety field types...`、`link --yes rejects empty or unknown seeking...`、`link --mark-recommended validates all safety and relation prerequisites before any PATCH`、`link fails closed before any PATCH when a relation would exceed the Notion write limit`、`updatePage rejects relation writes above the Notion array limit...`、`fill_job_json refuses a cleared fresh description...`、`fill_job_json refuses missing or non-rich-text target JSON properties`、`fill_job_json fails when post-write content differs...`、`fill_job_json rechecks immediately before PATCH...`。
 
 ## 4. 端到端 mock 覆盖
 
@@ -212,7 +243,10 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 - JSON stdout 与退出码；
 - 缓存原子发布、回滚、`0700`/`0600`；
 - 模型部分失败/全部失败；
-- dry-run 不 PATCH、不产生写请求。
+- dry-run 不 PATCH、不产生写请求；
+- safety 缺配置/映射字段/空值/未知值/不支持类型均零 PATCH；
+- `--mark-recommended` 缺推荐公司属性或公司关系时零 PATCH；
+- fill 描述被清空/缺失、JSON 属性缺失/错误类型、写后内容被改、PATCH 前被并发修改都非 0，危险场景零写入。
 
 ## 5. 测试轮次与结果
 
@@ -225,26 +259,31 @@ Python 侧修复前运行 `python3 -m unittest discover -s tests -v` 为 7 个�
 | cli | `node --test .../cli.test.mjs` | 首轮 11 tests，9 pass，2 fail（缓存时效/空缓存、fill 描述长度）；修复后 11/11；补 4 个安全回归后 15/15 |
 | 第二轮基线 | `node --test .../ntn.test.mjs .../llm.test.mjs` | 24 tests，14 pass，10 fail |
 | 第二轮修复后聚焦 | 同上 | **25 tests，25 pass，0 fail，exit 0** |
-| 全量 Node（最终） | `node --test scripts/fanhan-ntn/test/*.test.mjs` | **59 tests，59 pass，0 fail，exit 0** |
+| 第三轮基线 | `node --test .../cli.test.mjs .../ntn.test.mjs` | 37 tests，29 pass，8 fail |
+| 第三轮修复后聚焦 | 同上 | **39 tests，39 pass，0 fail，exit 0** |
+| 全量 Node（最终） | `node --test scripts/fanhan-ntn/test/*.test.mjs` | **70 tests，70 pass，0 fail，exit 0** |
 | Python（最终） | `python3 -m unittest discover -s tests -v` | **7 tests，OK，exit 0** |
 
-测试夹具的 5 次修正是修正“测试输入与契约不一致”，不是放宽生产断言：
+测试夹具/契约调整共 7 处，均为修正“测试输入与契约不一致”，不是放宽生产断言：
 
 1. BM25 夹具原来让重复查询词在记录中占绝对主导，测试目标变成“重复词也不该赢”，与“去重后 BM25”契约不符；调整重复次数并保留稀有技能对比。
 2. retry 夹具原消息没有 `429`/`rate limit`/`5xx` 等瞬态信号；生产实现已覆盖这些信号，夹具改为 `429 too many requests`。
 3. llm 部分失败夹具按结果下标选择失败项，与实现按请求 body 关联的契约不符；改为按 body 中的人选标识选择。
 4. fill 夹具原职位描述只有 10 余字，不满足脚本“描述足够长才生成”的目标集条件；改为更长的真实形态描述，目标集非空后才验证 dry-run/`--yes`/冲突。
 5. CLI 模型部分失败夹具原来用本地 `http` + `PERPLEXITY_API_KEY` 模拟官方 Perplexity；严格绑定后这不再是合法组合。改为自签名 HTTPS 本地服务 + `provider=custom` + `FANHAN_LLM_API_KEY`，仅在该测试子进程关闭证书校验，没有放宽生产校验。
+6. 第三轮成功 `link` 夹具显式配置合成全局不推荐/撤回字段；生产契约现在要求 `--yes` 前显式配置，这是补齐安全输入，不是放宽断言。
+7. 第三轮新增 fake `ntn` 的写后内容覆盖与 GET 时并发变更钩子，只用于证明“写后不一致/预检后变化”会失败，生产校验未放宽。
 
 ## 6. 未验证边界（必须保留）
 
-1. **生产 Notion schema 未验证**：字段名、`select`/`status` 实际类型、关系属性 ID、权限、页面是否存在全局撤回字段，都只按公开文档、fake `ntn` 和现有代码假设测试；没有连接真实 Notion 验证 property-item 响应。
-2. **跨机器并发未验证**：本机锁只防同一台机器的并发进程，不是 Notion/服务端 CAS；两台机器同时写仍可能互相覆盖。锁回收也只覆盖 live/dead owner 的常规竞态，不声称文件系统级原子 CAS。
+1. **生产 Notion schema 未验证**：字段名、`select`/`status` 实际类型、关系属性 ID、权限、页面是否存在全局撤回字段，都只按公开文档、fake `ntn` 和现有代码假设测试；没有连接真实 Notion 验证 property-item 响应。safety 的“明确安全值”词表也是保守契约，不是生产枚举验证。
+2. **跨机器并发未验证**：本机锁只防同一台机器的并发进程，不是 Notion/服务端 CAS；两台机器同时写仍可能互相覆盖。锁回收也只覆盖 live/dead owner 的常规竞态，不声称文件系统级原子 CAS。`fill_job_json` 的 PATCH 前预检与 PATCH 之间仍有非 CAS 窗口。
 3. **候选人 + 多岗位写入不是事务**：候选人关系写成功、后续岗位失败时无法整体回滚；但会非 0 退出并明确报告失败，不会谎报全部成功。
 4. **真实模型端点未验证**：Decisions API 的鉴权、限流、响应结构只用 mock；测试不读取、不发送真实 key。
 5. **生产数据质量未重新统计**：README 中 136/576、38/97 是历史统计，可能已变化。
 6. **旧 Python 工具未改**：只修了插件清单和 Skill 文档；旧工具逻辑未在本轮回归范围内。
 7. **未实现能力**：邮箱/手机号/线程级去重、跟进附件、服务日志/发送流水，明确不在本 CLI 内。
+8. **关系写入上限依据公开 schema**：100 项来自 Notion 公开 page property value schema 的 `maxItems=100`，未对目标工作区逐字段验证；读取仍支持 >100 页。
 
 ## 7. 复现命令
 
@@ -279,6 +318,10 @@ done
 - `/workspace/recruiting-cli-fix-20261125/round2-final-focused.log`
 - `/workspace/recruiting-cli-fix-20261125/round2-final-node-tests.log`
 - `/workspace/recruiting-cli-fix-20261125/round2-final-python-tests.log`
+- `/workspace/recruiting-cli-fix-20261125/round3-baseline-focused.log`
+- `/workspace/recruiting-cli-fix-20261125/round3-final-focused.log`
+- `/workspace/recruiting-cli-fix-20261125/round3-final-node-tests.log`
+- `/workspace/recruiting-cli-fix-20261125/round3-final-python-tests.log`
 
 ## 8. 变更文件
 
@@ -288,10 +331,10 @@ done
 - `scripts/fanhan-ntn/src/ntn.mjs`：分页、重试、完整性检查、关系读取、锁、权限、原子写。
 - `scripts/fanhan-ntn/src/llm.mjs`：provider/key 绑定、并发校验、部分失败、档位命名。
 - `scripts/fanhan-ntn/scripts/fill_job_json.mjs`：默认 dry-run、新鲜读取、冲突、锁、非 0 失败。
-- `scripts/fanhan-ntn/test/*.test.mjs`：59 个 Node 回归测试。
+- `scripts/fanhan-ntn/test/*.test.mjs`：70 个 Node 回归测试。
 - `scripts/fanhan-ntn/README.md`、`skills/fanhan-recruiting-notion/SKILL.md`：安全边界与能力范围。
 - `.claude-plugin/plugin.json`、`skills/fanhan-recruiting-notion/agents/openai.yaml`：Skill 注册。
 
 ## 9. 结论
 
-在隔离环境、fake `ntn`、mock HTTP 和合成数据下，10 类反馈均完成“基线失败 → 修复 → 回归通过”。没有执行任何生产 Notion 写入、真实模型调用、push、PR、merge 或部署。生产 schema 与跨机器并发仍需在目标工作区单独验证。
+在隔离环境、fake `ntn`、mock HTTP 和合成数据下，10 类反馈、第二轮 3 个发布阻塞项、第三轮 safety/fill/关系上限问题均完成“基线失败 → 修复 → 定向回归 → 全量回归”。没有执行任何生产 Notion 写入、真实模型调用、push、PR、merge 或部署。生产 schema、真实模型、跨机器并发与 PATCH 前非 CAS 窗口仍需在目标工作区单独验证。

@@ -15,21 +15,24 @@ const title = (text) => ({ id: `title-${text}`, type: 'title', title: [{ plain_t
 function candidatePage(id, name, {
   matchedJobs = [], companies = [], duplicate = false, seeking = 'OPEN', note = '', emailBody = '',
   json = { skills: [{ value: 'Python 服务端' }] }, includeSafety = true, extraProps = {},
+  includeRecommended = true,
 } = {}) {
   const p = {
     '候选人昵称': title(name),
     '候选人检索 JSON': rich(JSON.stringify(json)),
     '候选人职位类目': select('算法'),
     '匹配的职位': relation(matchedJobs),
-    '推荐过的公司': relation(companies),
+    ...(includeRecommended ? { '推荐过的公司': relation(companies) } : {}),
     '备注': rich(note),
     '邮件正文': rich(emailBody),
-    ...extraProps,
   };
   if (includeSafety) {
     p['是否重复'] = { id: 'dup', type: 'checkbox', checkbox: duplicate };
     p['求职状态'] = select(seeking);
+    p['全局不推荐'] = { id: 'dnr', type: 'checkbox', checkbox: false };
+    p['撤回状态'] = { id: 'wd', type: 'checkbox', checkbox: false };
   }
+  Object.assign(p, extraProps);
   return page(id, name, { properties: p });
 }
 
@@ -66,6 +69,16 @@ function stateWith({ candidates = [], jobs = [], companies = [], fail = {}, requ
     pages: Object.fromEntries([...candidates, ...jobs, ...companies].map((p) => [p.id, p])),
     relations,
   };
+}
+
+function configureSafety(ws, safety = {}) {
+  fs.writeFileSync(path.join(ws.home, '.fanhan-ntn', 'config.json'), JSON.stringify({
+    safety: {
+      doNotRecommend: '全局不推荐',
+      withdrawn: '撤回状态',
+      ...safety,
+    },
+  }));
 }
 
 function startServer(handler, tls = null) {
@@ -213,6 +226,7 @@ test('link dry-run writes nothing; sequential --yes runs merge fresh relations i
       'job-2': { '匹配的人选': { ids: [] } },
     },
   }));
+  configureSafety(ws);
   assert.equal(ws.run(['sync']).status, 0);
   const dry = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一']);
   assert.equal(dry.status, 0, dry.stderr);
@@ -246,6 +260,7 @@ test('link fails closed when fresh job status is missing', () => {
     jobs: [jobPage('job-1', '岗位一', { includeStatus: false })],
     relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
   }));
+  configureSafety(ws);
   assert.equal(ws.run(['sync']).status, 0);
   const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
   assert.notEqual(r.status, 0);
@@ -266,6 +281,7 @@ test('concurrent link is serialized by the local lock and does not lose earlier 
   });
   state.writeDelayMs = 250;
   ws.writeState(state);
+  configureSafety(ws);
   assert.equal(ws.run(['sync']).status, 0);
   const [a, b] = await Promise.all([
     ws.runAsync(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']),
@@ -303,6 +319,7 @@ test('link write failure exits nonzero and does not report false success', () =>
   });
   state.failWriteIds = ['job-1'];
   ws.writeState(state);
+  configureSafety(ws);
   assert.equal(ws.run(['sync']).status, 0);
   const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
   assert.notEqual(r.status, 0);
@@ -312,7 +329,7 @@ test('link write failure exits nonzero and does not report false success', () =>
 
 test('link honours an explicitly configured withdrawn safety field', () => {
   const ws = tempWorkspace();
-  fs.writeFileSync(path.join(ws.home, '.fanhan-ntn', 'config.json'), JSON.stringify({ safety: { withdrawn: '撤回状态' } }));
+  configureSafety(ws);
   ws.writeState(stateWith({
     candidates: [candidatePage('cand-1', '甲', { extraProps: { '撤回状态': select('已撤回') } })],
     jobs: [jobPage('job-1', '岗位一')],
@@ -322,6 +339,116 @@ test('link honours an explicitly configured withdrawn safety field', () => {
   const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
   assert.notEqual(r.status, 0);
   assert.match(r.stderr, /撤回|安全|safety/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('link --yes fails closed when global safety protections are not configured', () => {
+  const ws = tempWorkspace();
+  ws.writeState(stateWith({
+    candidates: [candidatePage('cand-1', '甲')],
+    jobs: [jobPage('job-1', '岗位一')],
+    relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /全局|不推荐|撤回|safety|配置/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('link honours mapped duplicate/seeking fields and validates their values', () => {
+  const ws = tempWorkspace();
+  configureSafety(ws, { duplicate: '重复标记', seeking: '求职意向状态' });
+  const cand = candidatePage('cand-1', '甲', {
+    includeSafety: false,
+    extraProps: {
+      '重复标记': select('不重复'),
+      '求职意向状态': select('求职中'),
+      '全局不推荐': select('可推荐'),
+      '撤回状态': select('未撤回'),
+    },
+  });
+  ws.writeState(stateWith({
+    candidates: [cand],
+    jobs: [jobPage('job-1', '岗位一')],
+    relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal((ws.readState().writes || []).length, 2);
+});
+
+test('link rejects unsupported safety field types before any PATCH', () => {
+  const ws = tempWorkspace();
+  configureSafety(ws, { duplicate: '重复标记' });
+  const cand = candidatePage('cand-1', '甲', {
+    includeSafety: false,
+    extraProps: {
+      '重复标记': { id: 'dup-formula', type: 'formula', formula: { boolean: false } },
+      '求职状态': select('OPEN'),
+      '全局不推荐': { id: 'dnr', type: 'checkbox', checkbox: false },
+      '撤回状态': { id: 'wd', type: 'checkbox', checkbox: false },
+    },
+  });
+  ws.writeState(stateWith({
+    candidates: [cand],
+    jobs: [jobPage('job-1', '岗位一')],
+    relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /类型|formula|不支持|安全/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('link --yes rejects empty or unknown seeking instead of treating it as safe', () => {
+  const ws = tempWorkspace();
+  configureSafety(ws);
+  ws.writeState(stateWith({
+    candidates: [candidatePage('cand-1', '甲', { seeking: '未知' })],
+    jobs: [jobPage('job-1', '岗位一')],
+    relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /求职|状态|未知|安全/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('link --mark-recommended validates all safety and relation prerequisites before any PATCH', () => {
+  const ws = tempWorkspace();
+  configureSafety(ws);
+  ws.writeState(stateWith({
+    candidates: [candidatePage('cand-1', '甲', { includeRecommended: false })],
+    jobs: [jobPage('job-1', '岗位一', { companyIds: ['co-1'] })],
+    relations: { 'cand-1': { '匹配的职位': { ids: [] } }, 'job-1': { '匹配的人选': { ids: [] } } },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--mark-recommended', '--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /推荐|公司|relation|属性|缺少|安全/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('link fails closed before any PATCH when a relation would exceed the Notion write limit', () => {
+  const ws = tempWorkspace();
+  configureSafety(ws);
+  const existing = Array.from({ length: 100 }, (_, i) => `other-${i}`);
+  ws.writeState(stateWith({
+    candidates: [candidatePage('cand-1', '甲')],
+    jobs: [jobPage('job-1', '岗位一', { matched: existing })],
+    relations: {
+      'cand-1': { '匹配的职位': { ids: [] } },
+      'job-1': { '匹配的人选': { ids: existing } },
+    },
+  }));
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.run(['link', '--candidate', '甲', '--jobs', '岗位一', '--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr, /100|上限|limit|关系/i);
   assert.equal((ws.readState().writes || []).length, 0);
 });
 
@@ -376,4 +503,67 @@ test('fill_job_json defaults to dry-run, requires --yes, verifies fresh state an
   assert.notEqual(conflict.status, 0);
   assert.match(conflict.stderr + conflict.stdout, /冲突|已存在|conflict|fresh|当前/i);
   assert.equal(ws.readState().writes.length, 1);
+});
+
+test('fill_job_json refuses a cleared fresh description instead of resurrecting the cache', () => {
+  const ws = tempWorkspace();
+  const state = stateWith({
+    jobs: [jobPage('job-1', '后端工程师', { description: '负责 Python 服务端研发、接口设计与高并发系统优化。' })],
+  });
+  ws.writeState(state);
+  assert.equal(ws.run(['sync']).status, 0);
+  delete state.pages['job-1'].properties['职位描述'];
+  ws.writeState(state);
+  const r = ws.runScript(FILL, ['--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /描述|description|缺失|schema|冲突/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('fill_job_json refuses missing or non-rich-text target JSON properties', () => {
+  const ws = tempWorkspace();
+  const state = stateWith({
+    jobs: [jobPage('job-1', '后端工程师', { description: '负责 Python 服务端研发、接口设计与高并发系统优化。', includeJson: false })],
+  });
+  ws.writeState(state);
+  assert.equal(ws.run(['sync']).status, 0);
+  const missing = ws.runScript(FILL, ['--yes']);
+  assert.notEqual(missing.status, 0);
+  assert.match(missing.stderr + missing.stdout, /JSON|属性|schema|类型|缺失/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+
+  state.pages['job-1'].properties['职位检索 JSON'] = select('错误类型');
+  ws.writeState(state);
+  const wrong = ws.runScript(FILL, ['--yes']);
+  assert.notEqual(wrong.status, 0);
+  assert.match(wrong.stderr + wrong.stdout, /JSON|rich_text|属性|schema|类型/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
+test('fill_job_json fails when post-write content differs from the intended payload', () => {
+  const ws = tempWorkspace();
+  const state = stateWith({
+    jobs: [jobPage('job-1', '后端工程师', { description: '负责 Python 服务端研发、接口设计与高并发系统优化。' })],
+  });
+  state.postWriteRichText = { 'job-1': { '职位检索 JSON': JSON.stringify({ tampered: true }) } };
+  ws.writeState(state);
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.runScript(FILL, ['--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /复核|不一致|mismatch|hash|内容/i);
+  assert.equal((ws.readState().writes || []).length, 1);
+});
+
+test('fill_job_json rechecks immediately before PATCH and aborts on an intervening change', () => {
+  const ws = tempWorkspace();
+  const state = stateWith({
+    jobs: [jobPage('job-1', '后端工程师', { description: '负责 Python 服务端研发、接口设计与高并发系统优化。' })],
+  });
+  state.mutatePageOnGet = { 'job-1': { at: 2, removeProperty: '职位描述' } };
+  ws.writeState(state);
+  assert.equal(ws.run(['sync']).status, 0);
+  const r = ws.runScript(FILL, ['--yes']);
+  assert.notEqual(r.status, 0);
+  assert.match(r.stderr + r.stdout, /描述|冲突|预检|并发/i);
+  assert.equal((ws.readState().writes || []).length, 0);
 });

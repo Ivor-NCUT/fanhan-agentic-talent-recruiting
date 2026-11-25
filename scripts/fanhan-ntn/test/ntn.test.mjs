@@ -137,6 +137,15 @@ test('readRelation fails closed when the relation property is missing', async ()
   await assert.rejects(() => readRelation('cand-1', '匹配的职位'), /属性|property|relation/i);
 });
 
+test('updatePage rejects relation writes above the Notion array limit before sending PATCH', async () => {
+  const ws = tempWorkspace();
+  ws.writeState({ pages: { 'p-1': page('p-1', '页面', { properties: {} }) } });
+  const { updatePage } = await load(ws);
+  const relation = Array.from({ length: 101 }, (_, i) => ({ id: `id-${i}` }));
+  await assert.rejects(() => updatePage('p-1', { '关系': { relation } }), /100|上限|limit|关系/i);
+  assert.equal((ws.readState().writes || []).length, 0);
+});
+
 test('local lock is exclusive and can be released', async () => {
   const ws = tempWorkspace();
   const { acquireLock } = await load(ws);

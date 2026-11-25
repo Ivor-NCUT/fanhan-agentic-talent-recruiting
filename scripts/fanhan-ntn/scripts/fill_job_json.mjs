@@ -26,6 +26,32 @@ function richTextChunks(str) {
 }
 
 const rt = (prop) => (prop?.rich_text || []).map((t) => t.plain_text || t.text?.content || '').join('');
+const canonical = (v) => {
+  if (Array.isArray(v)) return v.map(canonical);
+  if (v && typeof v === 'object') return Object.fromEntries(Object.keys(v).sort().map((k) => [k, canonical(v[k])]));
+  return v;
+};
+const canonicalJson = (v) => JSON.stringify(canonical(v));
+
+/** 目标属性必须是 rich_text；缺失、错误类型或结构异常都不能当成空。 */
+function richTextProperty(props, name) {
+  const prop = props?.[name];
+  if (!prop) throw new Error(`Notion 页面缺少「${name}」属性；无法验证，拒绝写入。请先验证 schema。`);
+  if (prop.type !== 'rich_text') throw new Error(`Notion「${name}」属性类型为「${prop.type || '缺失'}」，不是 rich_text；拒绝写入。请先验证 schema。`);
+  if (!Array.isArray(prop.rich_text)) throw new Error(`Notion「${name}」属性缺少 rich_text 数组；拒绝写入。请先验证 schema。`);
+  return rt(prop).trim();
+}
+
+/** 只读最新页面并验证描述仍非空、与缓存一致、目标 JSON 仍为空。 */
+function validateFreshTarget(page, cachedDescription) {
+  const props = page?.properties || {};
+  const description = richTextProperty(props, '职位描述');
+  if (!description) throw new Error('冲突：Notion 当前「职位描述」为空/缺失，拒绝回退到缓存中的旧描述。');
+  if (description !== cachedDescription) throw new Error('冲突：Notion 当前「职位描述」与缓存不一致，先 fanhan-ntn sync 再生成。');
+  const existing = richTextProperty(props, '职位检索 JSON');
+  if (existing) throw new Error('冲突：Notion 当前「职位检索 JSON」已存在且非空，拒绝覆盖陈旧生成结果。');
+  return { props, description };
+}
 
 const targets = jobs.filter((j) => !j.hasJson && j.description && j.description.trim().length > 20);
 console.log(`待生成岗位检索 JSON：${targets.length} 条`);
@@ -40,57 +66,65 @@ if (write) {
 }
 try {
 for (const j of targets) {
+  const cachedDescription = String(j.description || '').trim();
+
+  // 默认 dry-run 只使用缓存做预览，不读取/写入 Notion。
+  if (!write) {
+    const locations = extractCities(`${cachedDescription}\n${j.name}`);
+    console.log(`- ${j.name} | ${cachedDescription.length} 字 | category=${j.categoryKey || '未知'} | locations=${locations.join('/') || '无'}`);
+    continue;
+  }
+
   let fresh;
+  let name;
+  let payload;
+  let text;
   try {
     fresh = await fetchPage(j.id);
-    const props = fresh.properties || {};
-    const existing = rt(props['职位检索 JSON']).trim();
-    if (existing) {
-      failed.push({ name: j.name, error: '冲突：Notion 当前「职位检索 JSON」已存在且非空，拒绝覆盖陈旧生成结果。' });
-      continue;
-    }
-    const freshDesc = rt(props['职位描述']).trim();
-    if (freshDesc && freshDesc !== String(j.description || '').trim()) {
-      failed.push({ name: j.name, error: '冲突：Notion 当前「职位描述」与缓存不一致，先 fanhan-ntn sync 再生成。' });
-      continue;
-    }
+    const { props, description } = validateFreshTarget(fresh, cachedDescription);
+    name = (props['职位名称']?.title || []).map((t) => t.plain_text || t.text?.content || '').join('') || j.name;
+    const locations = extractCities(`${description}\n${name}`);
+    const catKey = categoryKey(choice(props['职位类目'])) || j.categoryKey || null;
+    const preference = rt(props['职位招聘偏好']) || j.preference || null;
+    payload = {
+      title: name,
+      category: catKey,
+      locations,
+      workModes: [],
+      sourceHash: sha(`${name}\n${description}`),
+      description,
+      preferences: preference,
+      originalText: `${name}\n${locations.join('/')}\n\n${description}`,
+    };
+    text = JSON.stringify(payload, null, 2);
   } catch (e) {
-    failed.push({ name: j.name, error: `读取最新页面失败：${e.message}` });
-    continue;
-  }
-
-  const props = fresh.properties || {};
-  const name = (props['职位名称']?.title || []).map((t) => t.plain_text || t.text?.content || '').join('') || j.name;
-  const description = rt(props['职位描述']).trim() || j.description;
-  const locations = extractCities(`${description}\n${name}`);
-  const catKey = categoryKey(choice(props['职位类目'])) || j.categoryKey || null;
-  const preference = rt(props['职位招聘偏好']) || j.preference || null;
-  const payload = {
-    title: name,
-    category: catKey,
-    locations,
-    workModes: [],
-    sourceHash: sha(`${name}\n${description}`),
-    description,
-    preferences: preference,
-    originalText: `${name}\n${locations.join('/')}\n\n${description}`,
-  };
-  const text = JSON.stringify(payload, null, 2);
-
-  if (!write) {
-    console.log(`- ${name} | ${text.length} 字 | category=${catKey || '未知'} | locations=${locations.join('/') || '无'}`);
+    failed.push({ name: j.name, error: `读取/预检最新页面失败：${e.message}` });
     continue;
   }
 
   try {
+    // 在 PATCH 前立刻再读一次，检测预检后被并发修改/清空的目标。
+    const beforeWrite = await fetchPage(j.id);
+    validateFreshTarget(beforeWrite, cachedDescription);
+    if (fresh.last_edited_time && beforeWrite.last_edited_time && fresh.last_edited_time !== beforeWrite.last_edited_time) {
+      throw new Error('冲突：最新页面 last_edited_time 在预检后发生变化，可能被并发修改；拒绝覆盖。');
+    }
+
     await updatePage(j.id, { '职位检索 JSON': { rich_text: richTextChunks(text) } });
     const after = await fetchPage(j.id);
-    const got = rt(after.properties?.['职位检索 JSON']).trim();
+    const got = richTextProperty(after.properties || {}, '职位检索 JSON');
     if (!got) throw new Error('写入后复核失败：最新页面「职位检索 JSON」仍为空');
+    let parsed;
+    try { parsed = JSON.parse(got); } catch { throw new Error('写入后复核失败：「职位检索 JSON」不是合法 JSON，可能被并发修改。'); }
+    const expectedHash = sha(canonicalJson(payload)).slice(0, 16);
+    const actualHash = sha(canonicalJson(parsed)).slice(0, 16);
+    if (canonicalJson(parsed) !== canonicalJson(payload)) {
+      throw new Error(`写入后复核失败：规范化 JSON 哈希不一致（期望 ${expectedHash}，实际 ${actualHash}），可能被并发覆盖。`);
+    }
     ok++;
     process.stdout.write(`\r写入并复核 ${ok}/${targets.length} …`);
   } catch (e) {
-    failed.push({ name, error: e.message.slice(0, 220) });
+    failed.push({ name, error: e.message.slice(0, 260) });
   }
 }
 } finally {

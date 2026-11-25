@@ -246,8 +246,29 @@ export async function readRelation(pageId, propertyName, { pageSize = 100 } = {}
   return { ids: [...new Set(ids)], page, property: prop, paginated: true };
 }
 
+// Notion PATCH 的 relation 数组公开上限为 100（page property value schema maxItems=100）。
+export const RELATION_WRITE_MAX = 100;
+
+/** 在发送任何 PATCH 前验证关系数组上限；调用方应一次性预检所有计划写入。 */
+export function validateRelationWriteProperties(properties) {
+  if (!properties || typeof properties !== 'object' || Array.isArray(properties)) {
+    throw new Error('PATCH properties 必须是非数组对象；拒绝发送。');
+  }
+  for (const [name, value] of Object.entries(properties)) {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) {
+      throw new Error(`属性「${name}」的 PATCH 值必须是对象；拒绝发送。`);
+    }
+    if (value.relation === undefined) continue;
+    if (!Array.isArray(value.relation)) throw new Error(`关系属性「${name}」的 relation 必须是数组；拒绝发送。`);
+    if (value.relation.length > RELATION_WRITE_MAX) {
+      throw new Error(`关系属性「${name}」包含 ${value.relation.length} 项，超过 Notion PATCH 关系数组上限 ${RELATION_WRITE_MAX}；拒绝发送，未写入任何内容。`);
+    }
+  }
+}
+
 /** 写回：更新页面属性（关系等）。写操作不自动重试，避免重复提交。 */
 export async function updatePage(pageId, properties) {
+  validateRelationWriteProperties(properties);
   return ntnJson(['api', `/v1/pages/${pageId}`, '-X', 'PATCH', '-d', '@-'], JSON.stringify({ properties }));
 }
 

@@ -27,10 +27,12 @@
 - `sync` 先拉完三张表，任何一页失败或 `request_status.incomplete` 都会中止；只有完整成功才一次性原子替换缓存，不会发布混合代际，也不会留下半套新缓存。
 - `~/.fanhan-ntn/` 目录权限收紧为 `0700`，缓存文件为 `0600`（包括已存在的缓存）。
 - `list` / `get` / `status` 会显示缓存同步时间、距今多久、是否超过 `FANHAN_CACHE_STALE_MS`（默认 24 小时）。
-- `link --yes` 每次新鲜读取候选人与岗位页面及关系属性，完整翻页（超过 25 项不丢），本地合并去重；写前检查重复/求职状态，写后逐项复核。并发写只用**本机文件锁**串行化，**不是服务端 CAS**，不保证跨机器并发。
+- `link --yes` 每次新鲜读取候选人与岗位页面及关系属性，完整翻页（超过 25 项不丢），本地合并去重；写前按 `safety` 映射检查重复、求职状态和全局保护字段，写后逐项复核。并发写只用**本机文件锁**串行化，**不是服务端 CAS**，不保证跨机器并发。
+- `safety` 可映射 `duplicate` / `seeking` / `recommendedCompanies` / `doNotRecommend` / `withdrawn`。`--yes` 前必须显式配置全局不推荐/撤回；字段缺失、空值、未知值、不支持的 Notion 类型或不是明确否/未命中值都会拒绝，不把空 select/未知文本当安全。显式配置但为空的字段名视为无效，不回退默认。
+- `link --yes` 在第一个 PATCH 前完成 `--mark-recommended` 的推荐公司属性/公司关系/所有关系数组上限预检；缺任何前置都零写入。
 - 写入岗位关系前，新鲜读取岗位状态；状态缺失或不是「招聘中」直接拒绝。
-- 全局「不推荐 / 撤回」保护没有可验证的线上字段时不会凭空编造：默认在 `status` / `audit` 显示未配置；需要时在 `~/.fanhan-ntn/config.json` 的 `safety` 显式声明真实字段名，`link` 会在页面缺失该字段或命中保护时拒绝写入。
-- `scripts/fill_job_json.mjs` 默认 dry-run；只有显式 `--yes` 才写。写前新鲜读取页面，若「职位检索 JSON」已非空或职位描述与缓存不一致则报冲突；任何读取/写入/复核失败都以非 0 退出。
+- 关系**读取**支持 >25、>100 条并完整翻页；关系**写入**按 Notion 公开 schema 的 `maxItems=100` 在发送前拒绝超限，不会静默截断或覆盖。
+- `scripts/fill_job_json.mjs` 默认 dry-run，只读缓存预览、不访问 Notion；只有显式 `--yes` 才新鲜读取并写。写前要求「职位描述」非空且与缓存一致、「职位检索 JSON」属性存在且为空；描述被清空时**不回退缓存旧描述**。PATCH 前立即再读一次并检查并发变化，写后按规范化 JSON 比较内容与哈希；任何读取/写入/复核失败都以非 0 退出。预检与 PATCH 之间仍是本机非 CAS 窗口。
 
 ## 数据源
 
@@ -90,7 +92,7 @@ fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后�
 # 显式把岗位关联公司写回候选人「推荐过的公司」
 fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后训练" --yes --mark-recommended
 
-# 为缺检索 JSON 的岗位生成 JSON（默认 dry-run；--yes 前会新鲜读取并检查冲突）
+# 为缺检索 JSON 的岗位生成 JSON（默认 dry-run；--yes 前会新鲜读取、二次预检并校验写后 JSON 内容）
 node scripts/fanhan-ntn/scripts/fill_job_json.mjs
 node scripts/fanhan-ntn/scripts/fill_job_json.mjs --yes
 ```

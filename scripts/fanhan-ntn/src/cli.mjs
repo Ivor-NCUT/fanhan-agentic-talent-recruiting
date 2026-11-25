@@ -3,7 +3,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { DS, DS_NAME, assertConfigured, queryAll, whoami, ntnVersion, updatePage, extractPageId, readRelation, verifyRelation, fetchPage, acquireLock, ensurePrivateDir } from './ntn.mjs';
+import { DS, DS_NAME, assertConfigured, queryAll, whoami, ntnVersion, updatePage, extractPageId, readRelation, verifyRelation, fetchPage, acquireLock, ensurePrivateDir, validateRelationWriteProperties } from './ntn.mjs';
 import { normalizeCandidate, normalizeJob, normalizeCompany, categoryKey, categoryFromKey, choice, meaningfulSearchJson, extractCities, employmentFromText, employmentFromStructured, EMP_LABEL } from './parse.mjs';
 import { buildPool, describePool, seekingAllows } from './pool.mjs';
 import { llmConfig, judge, judgeSingle, FIT_LEVEL_NAMES } from './llm.mjs';
@@ -104,46 +104,132 @@ function localRootConfig() {
 function safetyContract() {
   const cfg = localRootConfig();
   const s = cfg.safety || {};
+  const name = (value, fallback = null) => {
+    if (value === undefined || value === null) return fallback;
+    if (typeof value !== 'string' || !value.trim()) return null;
+    return value.trim();
+  };
   const contract = {
-    duplicate: s.duplicate || '是否重复',
-    seeking: s.seeking || '求职状态',
-    recommendedCompanies: s.recommendedCompanies || '推荐过的公司',
-    doNotRecommend: s.doNotRecommend || null,
-    withdrawn: s.withdrawn || null,
+    duplicate: name(s.duplicate, '是否重复'),
+    seeking: name(s.seeking, '求职状态'),
+    recommendedCompanies: name(s.recommendedCompanies, '推荐过的公司'),
+    doNotRecommend: name(s.doNotRecommend),
+    withdrawn: name(s.withdrawn),
   };
   const missing = [];
   if (!contract.doNotRecommend) missing.push('全局不推荐字段');
   if (!contract.withdrawn) missing.push('撤回保护字段');
-  return { ...contract, missing, globalConfigured: missing.length === 0 };
+  if (!contract.duplicate) missing.push('重复保护字段');
+  if (!contract.seeking) missing.push('求职状态字段');
+  if (!contract.recommendedCompanies) missing.push('推荐过的公司字段');
+  return { ...contract, missing, globalConfigured: !missing.includes('全局不推荐字段') && !missing.includes('撤回保护字段') };
 }
 
-function safetyFlag(prop) {
-  if (!prop) return null;
-  if (prop.type === 'checkbox') return prop.checkbox === true;
-  if (prop.type === 'number') return Number(prop.number || 0) > 0;
-  const v = choice(prop) || (prop.rich_text || []).map((t) => t.plain_text || '').join('');
-  if (!v) return false;
-  return /^(是|已撤回|撤回|不推荐|禁止|true|yes|1)$/i.test(String(v).trim()) || /撤回|不推荐|禁止/.test(String(v));
-}
+const SAFETY_TRUE = /^(是|有|重复|已撤回|撤回|不推荐|禁止|true|yes|on|1)$/i;
+const SAFETY_TRUE_TEXT = /重复|撤回|不推荐|禁止/;
+const SAFETY_FALSE = /^(否|不|无|未|正常|可推荐|不重复|未重复|未撤回|未标记|clear|false|no|off|0|n)$/i;
+const SEEKING_POSITIVE = /^(是|在求职|求职中|正在求职|求职|找工作|在找工作|看机会|考虑机会|在职.?考虑机会|开放|open|open[_ -]?to[_ -]?work|active|available|looking|looking for|actively looking|yes|true|on|1)$/i;
+const SEEKING_BLOCKED = /不求职|不找工作|不看机会|暂不考虑|暂停求职|停止求职|已撤回|撤回|已入职|已停止|not looking|not[ -]?seeking|withdrawn|closed/i;
+const SEEKING_UNKNOWN = /^(未知|待确认|待定|不明|无|空|unknown|unclear|tbd|n\/a)$/i;
 
-function assertCandidateSafety(page) {
-  const p = page.properties || {};
-  const dup = p['是否重复'];
-  const seek = p['求职状态'];
-  if (!dup) throw new Error('候选人页面缺少安全字段「是否重复」，无法验证重复保护；拒绝 link。请先验证 Notion schema。');
-  if (!seek) throw new Error('候选人页面缺少安全字段「求职状态」，无法验证是否在求职；拒绝 link。请先验证 Notion schema。');
-  if (dup.checkbox === true) throw new Error('候选人被标记为「是否重复」，拒绝写入关系。');
-  const seekVal = choice(seek);
-  if (seekVal && !seekingAllows(seekVal)) throw new Error(`候选人求职状态为「${seekVal}」，不求职/已撤回，拒绝写入关系。`);
-
-  const cfg = safetyContract();
-  for (const [label, field] of [['全局不推荐', cfg.doNotRecommend], ['撤回', cfg.withdrawn]]) {
-    if (!field) continue;
-    const prop = p[field];
-    if (!prop) throw new Error(`safety 配置了${label}字段「${field}」，但候选人页面缺失；拒绝写入。`);
-    if (safetyFlag(prop)) throw new Error(`候选人命中${label}保护（${field}），拒绝写入。`);
+/** 只接受可解释的显式值；空值/未知值不能当成安全。 */
+function safetyValue(prop, label, field) {
+  if (!prop) throw new Error(`候选人页面缺少安全字段「${field}」（${label}）；拒绝写入。请先验证 Notion schema 或 safety 配置。`);
+  if (!prop.type) throw new Error(`安全字段「${field}」（${label}）缺少 Notion property type；无法验证，拒绝写入。`);
+  let value;
+  let blocked;
+  let explicitSafe;
+  if (prop.type === 'checkbox') {
+    if (typeof prop.checkbox !== 'boolean') throw new Error(`安全字段「${field}」（${label}）的 checkbox 值缺失/不是布尔值；不能当成否，拒绝写入。`);
+    value = prop.checkbox;
+    blocked = prop.checkbox === true;
+    explicitSafe = prop.checkbox === false;
+  } else if (prop.type === 'number') {
+    if (typeof prop.number !== 'number' || !Number.isFinite(prop.number)) throw new Error(`安全字段「${field}」（${label}）的 number 值缺失/无效；拒绝写入。`);
+    value = prop.number;
+    blocked = prop.number > 0;
+    explicitSafe = prop.number <= 0;
+  } else if (prop.type === 'select' || prop.type === 'status') {
+    value = choice(prop);
+    if (value == null || !String(value).trim()) throw new Error(`安全字段「${field}」（${label}）为空；空值不能当成明确未命中，拒绝写入。`);
+    value = String(value).trim();
+    explicitSafe = SAFETY_FALSE.test(value);
+    blocked = SAFETY_TRUE.test(value) || (SAFETY_TRUE_TEXT.test(value) && !explicitSafe);
+  } else if (prop.type === 'rich_text' || prop.type === 'multi_select') {
+    const parts = prop.type === 'rich_text'
+      ? (Array.isArray(prop.rich_text) ? prop.rich_text : null)?.map((t) => t.plain_text || t.text?.content || '')
+      : (Array.isArray(prop.multi_select) ? prop.multi_select : null)?.map((t) => t.name || '');
+    if (!parts) throw new Error(`安全字段「${field}」（${label}）的 ${prop.type} 值结构缺失；拒绝写入。`);
+    value = parts.join(',').trim();
+    if (!value) throw new Error(`安全字段「${field}」（${label}）为空；空值不能当成明确未命中，拒绝写入。`);
+    explicitSafe = SAFETY_FALSE.test(value);
+    blocked = SAFETY_TRUE.test(value) || (SAFETY_TRUE_TEXT.test(value) && !explicitSafe);
+  } else {
+    throw new Error(`安全字段「${field}」（${label}）使用不支持的 Notion 类型「${prop.type}」；支持 checkbox/number/select/status/rich_text/multi_select，拒绝写入。`);
   }
-  return cfg;
+  return { field, label, type: prop.type, value, blocked, explicitSafe };
+}
+
+function assertClearSafetyField(prop, label, field) {
+  const v = safetyValue(prop, label, field);
+  if (v.blocked) throw new Error(`候选人命中${label}保护（${field}=${String(v.value)}），拒绝写入关系。`);
+  if (!v.explicitSafe) throw new Error(`安全字段「${field}」（${label}）的值「${String(v.value)}」不是明确的否/未命中，不能当成安全，拒绝写入。`);
+  return v;
+}
+
+function assertSeekingField(prop, field) {
+  if (!prop) throw new Error(`候选人页面缺少安全字段「${field}」（求职状态）；拒绝写入。请先验证 Notion schema 或 safety 配置。`);
+  if (!prop.type) throw new Error(`安全字段「${field}」（求职状态）缺少 Notion property type；拒绝写入。`);
+  let value;
+  if (prop.type === 'checkbox') {
+    if (typeof prop.checkbox !== 'boolean') throw new Error(`安全字段「${field}」（求职状态）的 checkbox 值缺失/不是布尔值；拒绝写入。`);
+    if (prop.checkbox !== true) throw new Error(`候选人求职状态字段「${field}」为 false/未知，不能证明在求职；拒绝写入。`);
+    value = 'true';
+  } else if (prop.type === 'number') {
+    if (typeof prop.number !== 'number' || !Number.isFinite(prop.number)) throw new Error(`安全字段「${field}」（求职状态）的 number 值缺失/无效；拒绝写入。`);
+    if (prop.number <= 0) throw new Error(`候选人求职状态字段「${field}」为 ${prop.number}/未知，不能证明在求职；拒绝写入。`);
+    value = String(prop.number);
+  } else if (prop.type === 'select' || prop.type === 'status') {
+    value = choice(prop);
+    if (value == null || !String(value).trim()) throw new Error(`安全字段「${field}」（求职状态）为空；空值不能当成在求职，拒绝写入。`);
+    value = String(value).trim();
+  } else if (prop.type === 'rich_text' || prop.type === 'multi_select') {
+    const parts = prop.type === 'rich_text'
+      ? (Array.isArray(prop.rich_text) ? prop.rich_text : null)?.map((t) => t.plain_text || t.text?.content || '')
+      : (Array.isArray(prop.multi_select) ? prop.multi_select : null)?.map((t) => t.name || '');
+    if (!parts) throw new Error(`安全字段「${field}」（求职状态）的 ${prop.type} 值结构缺失；拒绝写入。`);
+    value = parts.join(',').trim();
+    if (!value) throw new Error(`安全字段「${field}」（求职状态）为空；空值不能当成在求职，拒绝写入。`);
+  } else {
+    throw new Error(`安全字段「${field}」（求职状态）使用不支持的 Notion 类型「${prop.type}」；拒绝写入。`);
+  }
+  if (SEEKING_BLOCKED.test(value)) throw new Error(`候选人求职状态为「${value}」，不求职/已撤回，拒绝写入关系。`);
+  if (SEEKING_UNKNOWN.test(value)) throw new Error(`候选人求职状态为「${value}」，无法确认在求职，拒绝写入关系。`);
+  if (!SEEKING_POSITIVE.test(value)) throw new Error(`候选人求职状态「${value}」不是可识别的求职状态（支持 OPEN/求职中/看机会等显式值），拒绝写入关系。`);
+  return value;
+}
+
+function assertSafetyConfig(safety, { markRecommended = false } = {}) {
+  const missing = [];
+  if (!safety.globalConfigured) missing.push(...safety.missing);
+  for (const [label, field] of [['重复保护字段', safety.duplicate], ['求职状态字段', safety.seeking]]) {
+    if (typeof field !== 'string' || !field.trim()) missing.push(label);
+  }
+  if (markRecommended && (typeof safety.recommendedCompanies !== 'string' || !safety.recommendedCompanies.trim())) {
+    missing.push('推荐过的公司字段');
+  }
+  if (missing.length) {
+    throw new Error(`safety 配置缺少必需保护：${[...new Set(missing)].join('、')}。--yes 写关系前必须显式配置全局不推荐/撤回等安全字段；拒绝写入。`);
+  }
+}
+
+function assertCandidateSafety(page, safety) {
+  const p = page.properties || {};
+  assertClearSafetyField(p[safety.duplicate], '重复', safety.duplicate);
+  assertSeekingField(p[safety.seeking], safety.seeking);
+  assertClearSafetyField(p[safety.doNotRecommend], '全局不推荐', safety.doNotRecommend);
+  assertClearSafetyField(p[safety.withdrawn], '撤回', safety.withdrawn);
+  return safety;
 }
 
 function positiveInt(value, fallback, name) {
@@ -762,18 +848,20 @@ async function cmdLink(args) {
   console.log(C.bold(`关联：${cand.name} ↔ ${jobRecords.map((j) => j.name).join('、')}`));
   for (const j of jobRecords) console.log(C.dim(`  ${cand.id} → ${j.id} ${j.name}`));
   const safety = safetyContract();
-  if (!safety.globalConfigured) console.log(C.yellow('  提示：未配置全局不推荐/撤回字段；link 只写关系，不提供发布级全局保护。'));
+  if (!safety.globalConfigured) console.log(C.yellow('  提示：未配置全局不推荐/撤回字段；预演只报告缺口，--yes 写关系会直接拒绝。'));
 
   if (!f.yes) {
     console.log(C.yellow('\n这是预演：不写 Notion、不联网读取、不更新缓存。确认后加 --yes 才会写入。'));
     return;
   }
 
+  // 所有危险写操作的安全前置必须在读取/任何 PATCH 之前完成。
+  assertSafetyConfig(safety, { markRecommended: !!f['mark-recommended'] });
   ensurePrivateDir(ROOT);
   const release = acquireLock(ROOT, 'link');
   try {
     const candRel = await readRelation(cand.id, '匹配的职位');
-    assertCandidateSafety(candRel.page);
+    assertCandidateSafety(candRel.page, safety);
     const freshJobs = [];
     for (const j of jobRecords) {
       const rel = await readRelation(j.id, '匹配的人选');
@@ -784,35 +872,61 @@ async function cmdLink(args) {
       freshJobs.push({ record: j, rel });
     }
 
+    const candIds = [...new Set([...candRel.ids, ...jobRecords.map((j) => j.id)])];
+    const jobWrites = freshJobs.map((x) => ({
+      record: x.record,
+      cached: x.record.relations.matchedCandidates || [],
+      ids: [...new Set([...x.rel.ids, cand.id])],
+    }));
+
+    let recommended = null;
+    if (f['mark-recommended']) {
+      // 推荐公司关系也必须新鲜、完整读取，并在任何 PATCH 之前验证属性/公司存在。
+      const companyIds = [];
+      for (const x of freshJobs) {
+        const companies = await readRelation(x.record.id, '关联公司');
+        companyIds.push(...companies.ids);
+      }
+      const uniqueCompanies = [...new Set(companyIds)];
+      if (!uniqueCompanies.length) throw new Error('岗位没有关联公司，无法 --mark-recommended；未写入任何关系。');
+      const recRel = await readRelation(cand.id, safety.recommendedCompanies);
+      recommended = {
+        property: safety.recommendedCompanies,
+        ids: [...new Set([...recRel.ids, ...uniqueCompanies])],
+      };
+    }
+
+    // Notion PATCH 的关系数组上限为 100；所有计划写入必须在第一个 PATCH 前验证。
+    const plannedWrites = [
+      { id: cand.id, properties: { 匹配的职位: { relation: candIds.map((id) => ({ id })) } } },
+      ...jobWrites.map((x) => ({ id: x.record.id, properties: { 匹配的人选: { relation: x.ids.map((id) => ({ id })) } } })),
+      ...(recommended ? [{ id: cand.id, properties: { [recommended.property]: { relation: recommended.ids.map((id) => ({ id })) } } }] : []),
+    ];
+    for (const w of plannedWrites) validateRelationWriteProperties(w.properties);
+
     freshConflict('候选人「匹配的职位」', cand.relations.matchedJobs || [], candRel.ids);
     for (const x of freshJobs) freshConflict(`岗位「${x.record.name}」「匹配的人选」`, x.record.relations.matchedCandidates || [], x.rel.ids);
 
-    const candIds = [...new Set([...candRel.ids, ...jobRecords.map((j) => j.id)])];
-    await updatePage(cand.id, { 匹配的职位: { relation: candIds.map((id) => ({ id })) } });
+    await updatePage(cand.id, plannedWrites[0].properties);
     const candCheck = await verifyRelation(cand.id, '匹配的职位', candIds);
     if (!candCheck.ok) throw new Error(`候选人关系写入后校验失败，缺少 ${candCheck.missing.length} 个关联；请重新 sync 并人工核对。`);
     console.log(C.green(`  ✓ 候选人「匹配的职位」已写入并复核（${candIds.length} 个）`));
 
-    for (const x of freshJobs) {
-      const ids = [...new Set([...x.rel.ids, cand.id])];
-      await updatePage(x.record.id, { 匹配的人选: { relation: ids.map((id) => ({ id })) } });
-      const check = await verifyRelation(x.record.id, '匹配的人选', ids);
+    for (const x of jobWrites) {
+      await updatePage(x.record.id, { 匹配的人选: { relation: x.ids.map((id) => ({ id })) } });
+      const check = await verifyRelation(x.record.id, '匹配的人选', x.ids);
       if (!check.ok) throw new Error(`岗位「${x.record.name}」关系写入后校验失败，缺少 ${check.missing.length} 人；请重新 sync 并人工核对。`);
-      console.log(C.green(`  ✓ 岗位「${x.record.name}」「匹配的人选」已写入并复核（${ids.length} 人）`));
+      console.log(C.green(`  ✓ 岗位「${x.record.name}」「匹配的人选」已写入并复核（${x.ids.length} 人）`));
     }
 
-    if (f['mark-recommended']) {
-      const companyIds = [...new Set(freshJobs.flatMap((x) => (x.rel.page.properties?.['关联公司']?.relation || []).map((r) => r.id)).filter(Boolean))];
-      if (!companyIds.length) throw new Error('岗位没有关联公司，无法 --mark-recommended；未写入推荐公司。');
-      const recRel = await readRelation(cand.id, safety.recommendedCompanies);
-      const ids = [...new Set([...recRel.ids, ...companyIds])];
-      await updatePage(cand.id, { [safety.recommendedCompanies]: { relation: ids.map((id) => ({ id })) } });
-      const check = await verifyRelation(cand.id, safety.recommendedCompanies, ids);
-      if (!check.ok) throw new Error(`「${safety.recommendedCompanies}」写入后校验失败，缺少 ${check.missing.length} 个；请人工核对。`);
-      console.log(C.green(`  ✓ 候选人「${safety.recommendedCompanies}」已写入并复核（${ids.length} 个）`));
+    if (recommended) {
+      await updatePage(cand.id, { [recommended.property]: { relation: recommended.ids.map((id) => ({ id })) } });
+      const check = await verifyRelation(cand.id, recommended.property, recommended.ids);
+      if (!check.ok) throw new Error(`「${recommended.property}」写入后校验失败，缺少 ${check.missing.length} 个；请人工核对。`);
+      console.log(C.green(`  ✓ 候选人「${recommended.property}」已写入并复核（${recommended.ids.length} 个）`));
     }
 
-    console.log(C.dim('\n关系已新鲜读取、合并去重、写入并逐项复核；本地锁只防同一台机器并发，不是服务端 CAS，也不保证跨机器并发。缓存未更新，重新 sync 后可见。'));
+    console.log(C.dim('\n关系已新鲜读取、合并去重、预检关系上限、写入并逐项复核；本地锁只防同一台机器并发，不是服务端 CAS，也不保证跨机器并发。缓存未更新，重新 sync 后可见。'));
   } finally {
     release();
   }
