@@ -5,6 +5,8 @@ description: 职位简历匹配度审核。输入公司介绍、一个JD、一�
 
 # 职位简历匹配度审核
 
+> **当前路径（2026-11-25 起）**：当前唯一在线招聘数据库是 **Notion**，在线查库/写回通过 [`fanhan-ntn`](../../scripts/fanhan-ntn/README.md) / [`fanhan-recruiting-notion`](../fanhan-recruiting-notion/SKILL.md) 进行。本 Skill 只审核当前对话、附件或用户显式提供的离线快照中的材料；不要把 Twenty / `recruiting-crm` / 旧 Base 当作当前生产 CRM 或回退。所需在线能力不在 Notion CLI 中时，停止并报告缺口。
+
 审核一个已指定的候选人与一个职位。先给匹配度与是否匹配，再给理由、证据和适用话术。
 这是材料审核，不是背调完成证明；简历自述、公司介绍和已核实事实保留各自来源。
 

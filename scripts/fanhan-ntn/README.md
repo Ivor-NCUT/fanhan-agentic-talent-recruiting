@@ -1,6 +1,8 @@
 # fanhan-ntn · 泛函招聘 Notion 版 CLI
 
-把原来的 Twenty 服务端招聘 CLI 改成以 **Notion 三张表为数据源**、**大模型做判断** 的版本。
+`fanhan-ntn` 是当前唯一在线招聘数据库——**Notion 三张表**——的 CLI 入口，**大模型做判断**。旧 Twenty 服务端 CLI 仅保留为历史/离线兼容，不在当前在线路径。
+
+> **当前路径（2026-11-25 起）**：在线招聘数据只查/写 Notion。Twenty、`recruiting-crm`、旧飞书 Base 不是当前生产库，也不会在 Notion 缺字段、连接失败或无结果时自动回退。Notion CLI 未覆盖的能力按 fail-closed 报告缺口，不切换到旧库。
 
 ## 核心设计：事实与判断分离
 
@@ -15,13 +17,26 @@
 
 硬性排除只用不可争辩的事实：
 
-- 岗位状态不是「招聘中」（`--include-closed` 可放开）
-- 正式/实习冲突（双方都明确标注时才排除，`--any-employment` 可放开）
-- 职类跨度过大（`--any-category` 可放开）
+- 岗位状态不是「招聘中」；**状态缺失不默认招聘中**（`--include-closed` / `--include-unknown-status` 可显式放开）
+- 正式/实习/兼职明确冲突（双方都明确标注时才排除，`--any-employment` 可放开）
+- 职类跨度过大；未知职类保留，不强行归入「其它」（`--any-category` 可放开）
+- 候选人标记重复、明确不求职/已撤回、已推荐过该公司（分别用 `--include-duplicates` / `--include-not-seeking` / `--include-recommended` 显式放开）
 
-超过条数上限（默认 60）时，用关键词召回裁剪，并在输出里明确写「超限后按关键词召回 60/225」——这是**召回**，不是评分。
+超过条数上限（默认 60）时，用**查询词去重后**的关键词召回裁剪，并在输出里明确写「超限后按关键词召回 60/225」——这是**召回**，不是评分。同一个查询词重复出现不会把分数乘倍。
 
-## 数据源
+## 缓存、写回与安全边界
+
+- `sync` 先拉完三张表，任何一页失败或 `request_status.incomplete` 都会中止；只有完整成功才一次性原子替换缓存，不会发布混合代际，也不会留下半套新缓存。
+- `~/.fanhan-ntn/` 目录权限收紧为 `0700`，缓存文件为 `0600`（包括已存在的缓存）。
+- `list` / `get` / `status` 会显示缓存同步时间、距今多久、是否超过 `FANHAN_CACHE_STALE_MS`（默认 24 小时）。
+- `link --yes` 每次新鲜读取候选人与岗位页面及关系属性，完整翻页（超过 25 项不丢），本地合并去重；写前按 `safety` 映射检查重复、求职状态和全局保护字段，写后逐项复核。并发写只用**本机文件锁**串行化，**不是服务端 CAS**，不保证跨机器并发。
+- `safety` 可映射 `duplicate` / `seeking` / `recommendedCompanies` / `doNotRecommend` / `withdrawn`。`--yes` 前必须显式配置全局不推荐/撤回；字段缺失、空值、未知值、不支持的 Notion 类型或不是明确否/未命中值都会拒绝，不把空 select/未知文本当安全。显式配置但为空的字段名视为无效，不回退默认。
+- `link --yes` 在第一个 PATCH 前完成 `--mark-recommended` 的推荐公司属性/公司关系/所有关系数组上限预检；缺任何前置都零写入。
+- 写入岗位关系前，新鲜读取岗位状态；状态缺失或不是「招聘中」直接拒绝。
+- 关系**读取**支持 >25、>100 条并完整翻页；关系**写入**按 Notion 公开 schema 的 `maxItems=100` 在发送前拒绝超限，不会静默截断或覆盖。
+- `scripts/fill_job_json.mjs` 默认 dry-run，只读缓存预览、不访问 Notion；只有显式 `--yes` 才新鲜读取并写。写前要求「职位描述」非空且与缓存一致、「职位检索 JSON」属性存在且为空；描述被清空时**不回退缓存旧描述**。PATCH 前立即再读一次并检查并发变化，写后按规范化 JSON 比较内容与哈希；任何读取/写入/复核失败都以非 0 退出。预检与 PATCH 之间仍是本机非 CAS 窗口。
+
+## 当前在线数据源：Notion
 
 通过本机 Notion 官方 CLI（`ntn`）读取，无需另建 integration：
 
@@ -43,7 +58,7 @@
 
 或用环境变量 `FANHAN_DS_CANDIDATES` / `FANHAN_DS_JOBS` / `FANHAN_DS_COMPANIES` 覆盖。查 ID：`ntn datasources resolve <database_id>`。
 
-`fanhan-ntn sync` 拉全量到 `~/.fanhan-ntn/`，之后所有查询走本地缓存，秒级响应。
+`fanhan-ntn sync` 拉全量到 `~/.fanhan-ntn/`，之后所有查询走本地缓存，秒级响应。缓存是快照，不保证与 Notion 实时一致；过期阈值和每次同步时间会显示在命令输出里。
 
 ## 用法
 
@@ -51,7 +66,9 @@
 # 凭据（key 走 stdin 进 Keychain，不出现在命令行参数里）
 pbpaste | fanhan-ntn auth login
 export FANHAN_DECIDER_MODEL=pplx-decider-latest   # 可选，默认即此
-export FANHAN_DECIDER_BASE=https://api.perplexity.ai  # 可选
+export FANHAN_DECIDER_BASE=https://api.perplexity.ai  # 可选，官方根路径或 /v1
+# 自定义 HTTPS endpoint 必须同时设置 FANHAN_DECIDER_PROVIDER=custom
+# 并显式提供 FANHAN_LLM_API_KEY；不会借用 PERPLEXITY/DEEPSEEK key 或 Keychain。
 
 fanhan-ntn status
 fanhan-ntn sync
@@ -71,14 +88,22 @@ fanhan-ntn explain "示例候选人" "算法工程师 - LLM后训练" --raw
 # 只看筛选结果，不调模型
 fanhan-ntn match --job "增长运营" --no-llm
 
-# 写回关系（默认预演）
+# 写回关系（默认预演，不联网、不写 Notion；--yes 才写）
 fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后训练"
 fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后训练" --yes
+# 显式把岗位关联公司写回候选人「推荐过的公司」
+fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后训练" --yes --mark-recommended
+
+# 为缺检索 JSON 的岗位生成 JSON（默认 dry-run；--yes 前会新鲜读取、二次预检并校验写后 JSON 内容）
+node scripts/fanhan-ntn/scripts/fill_job_json.mjs
+node scripts/fanhan-ntn/scripts/fill_job_json.mjs --yes
 ```
 
-## 与旧 CLI 的对应关系
+## 历史 CLI 对照（非当前路径）
 
-| 旧（Twenty） | 新（Notion） | 说明 |
+> 下表只用于理解历史命令演进。旧 Twenty 命令、`recruiting-crm` 和旧服务日志均不是当前在线入口；不要按旧命令查当前招聘库。
+
+| 旧（Twenty，历史） | 新（Notion，当前） | 说明 |
 |---|---|---|
 | `candidates upload` + `tasks` 队列 | 取消 | Notion 入库时已完成解析，没有异步流水线 |
 | `tasks list/retry` | `audit` | 变成数据体检清单 |
@@ -86,11 +111,20 @@ fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后�
 | `draft` / `share` | 保留在 Agent 侧 | CLI 不负责文案生成与发送 |
 | `companies/jobs/candidates` | `list` / `get` | 数据由人工在 Notion 维护，CLI 主要读 |
 
+**这不是旧邮件/电话/线程去重系统的完整替代品。** 新 CLI 没有实现、也不声称实现：
+
+- 邮箱/手机号/邮件线程级去重；
+- 跟进邮件附件与附件归档；
+- 旧服务日志、发送记录与审计流水；
+- 任何未在代码中明确实现的能力。
+
+遇到上述需求时应停止并报告具体能力缺口，或由人工确认 Notion 之外的替代流程；不得改用 Twenty / `recruiting-crm` / 旧 Base 作为当前生产库，也不要用本 CLI 的 `duplicate` 字段冒充全局去重。未实现/未验证的能力一律按 fail-closed 处理，不静默“尽量做”。
+
 ## 已知数据问题（会影响判断质量）
 
-1. **候选人 136/576 缺检索 JSON**，其中部分连备注、邮件正文都没有（空壳记录）。这类记录送模型时会降级为备注/正文，或直接缺材料。
-2. **职位 38/97 缺检索 JSON**，但职位描述完整，可确定性补生成。
-3. **两张表都没有「雇佣类型」「地点」结构化字段**，只能从 JSON 里的自由文本推断，推断结果一律标注来源（如「岗位=待确认（职位正文：未标注）」），置信不足时明确告知，不做静默假设。
+1. **候选人缺检索 JSON**（历史统计 136/576，可能已变化），其中部分连备注、邮件正文都没有（空壳记录）。这类记录送模型时会明确降级为备注/正文，并标出 `materialSource` / `fallbackReason`；空对象 `{}` 也按缺 JSON 处理，不当作有效材料。
+2. **职位缺检索 JSON**（历史统计 38/97，可能已变化），但职位描述完整时可确定性补生成；生成器默认 dry-run。
+3. **线上 schema 未在本仓库验证**：`select` 与 `status` 两种属性类型都做了兼容，但生产工作区是否同时存在、字段名是否一致仍以实际页面为准。雇佣类型只认结构化字段或明确的意向语句；年份、历史实习、职位名称、否定句不会被当作当前意向。地点区分「期望城市」与「当前地点」。
 4. 部分候选人 `preferences` 是带大量限定语的历史记录（“记录无日期，当前意向待确认”），这类不确定性会作为风险项传给模型。
 5. 部分记录姓名为占位符（“待补全候选人 · f39e87f5”），但材料本身完整，仍可参与判断。
 
@@ -105,7 +139,9 @@ fanhan-ntn link --candidate "示例候选人" --jobs "算法工程师 - LLM后�
 | `employment_conflict` | noul | 正式/实习明确冲突概率（信息缺失不算冲突） |
 | `seniority_ok` | noul | 职级是否大致对等 |
 
-排序只看 `fit`，其余三项作为并列参考，不做加权。单对约 4–5k input tokens，$0.02/1M，80 对成本约 0.7 美分。
+排序只看 `fit`，其余三项作为并列参考，不做加权。`fit.score * 25` 的数值刻度保持不变；CLI 的 `level` 是「期望分四舍五入」档位，并额外输出 `modalLevel`（概率最高的众数档），二者字段名不同，不互相替换。单对约 4–5k input tokens，$0.02/1M，80 对成本约 0.7 美分。
+
+凭据严格绑定 provider / endpoint / key：provider 特定 key 与 Keychain 只用于精确匹配的官方 HTTPS origin（`api.perplexity.ai`、`api.deepseek.com`，允许根路径或 `/v1`）。`DEEPSEEK_API_KEY` 只在 provider=deepseek 时使用，绝不会被静默发往 `api.perplexity.ai`。自定义 HTTPS endpoint 必须显式 `provider=custom` + `FANHAN_LLM_API_KEY`，不会借用 provider 专用 key；lookalike 域名、query/hash、内嵌账号密码、HTTP 和未知 provider 都在选凭据前拒绝，错误信息不包含密钥。测试只使用合成 key 和 mock 服务，不读取真实 key。
 
 ## 目录
 
@@ -120,3 +156,12 @@ src/auth.mjs         Keychain 凭据存取
 src/text.mjs         分词与 BM25（仅用于召回裁剪）
 src/cli.mjs          命令层
 ```
+
+## 测试
+
+```bash
+cd scripts/fanhan-ntn
+node --test test/*.test.mjs
+```
+
+测试使用 fake `ntn` 子进程、临时 HOME 和 mock `fetch`，不连接真实 Notion、不调用真实模型、不读取真实 key。生产 schema 与跨机器并发未验证，详见仓库根目录的 `docs/notion-cli-safety-review.md`。

@@ -1,0 +1,4 @@
+interface:
+  display_name: "泛函招聘 Notion 版"
+  short_description: "以 Notion 三张表为数据源做候选人/岗位双向检索、缓存同步与带安全写回的关系匹配"
+  default_prompt: "使用 $fanhan-recruiting-notion，根据我提供的候选人、JD 或 Notion 页面 ID，先核对缓存时效与安全字段，再执行检索、匹配或预演写回。"

@@ -1,6 +1,6 @@
 ---
 name: fanhan-agentic-talent-recruiting
-description: 泛函 Agentic 人才招聘合集入口。用户需要招聘帮助、尚未选定具体能力，或需要把检索匹配与单对审核衔接时使用。根据已有材料选择职位简历匹配度审核或职位与简历智能匹配，在当前对话中执行；用户已明确指定子 Skill 时直接使用该子 Skill。
+description: 泛函 Agentic 人才招聘合集入口。当前在线招聘库为 Notion；用户需要招聘帮助、尚未选定具体能力，或需要把 Notion 检索匹配与单对审核衔接时使用。根据已有材料选择 Notion 检索、职位简历匹配度审核或历史/离线匹配；用户已明确指定子 Skill 时直接使用该子 Skill。
 ---
 
 # 泛函 Agentic 人才招聘
@@ -8,23 +8,24 @@ description: 泛函 Agentic 人才招聘合集入口。用户需要招聘帮助�
 利用当前对话里的目标、公司、JD、候选人材料与已确认条件，选择下一步并直接执行。
 父入口只负责路由、衔接与验收；具体方法以子 Skill 为准。
 
-需要查库时，通过外部 `$recruiting-crm` 使用当前 Twenty CRM；双向匹配子 Skill 负责读取连接与字段映射。旧 CRM 已停用，不在连接失败时回退。只审核已提供的材料时无需连接 CRM。
+当前在线招聘数据统一在 **Notion**，通过 `fanhan-recruiting-notion` / `scripts/fanhan-ntn` 访问。Twenty、`recruiting-crm`、旧飞书 Base 只保留为历史或用户显式提供的离线快照兼容，不是当前生产库，也不在 Notion 缺少能力时回退；无法在 Notion CLI 完成的在线操作应停止并报告缺口。只审核当前对话或已提供的离线材料时无需连接数据库。
 
 ## 选择能力
 
 | 用户要完成的事 | 读取并执行 | 可检查结果 |
 |---|---|---|
+| 查当前候选人/岗位/公司库；JD找人、简历找岗；安全写回 Notion | [Notion 版检索与匹配](../fanhan-recruiting-notion/SKILL.md) · `fanhan-recruiting-notion` | Notion 双向检索、分数/档位、审核与受众话术、显式授权写回 |
 | 已指定一位候选人与一个职位，判断匹配度；复核某次推荐 | [职位简历匹配度审核](../job-resume-match-audit/SKILL.md) · `job-resume-match-audit` | 匹配度与理由；高匹配推荐、低匹配委婉告知或待确认问题 |
-| 一份简历找多个岗位；一个JD从候选人库筛选；批量排序与交付 | [职位 & 简历智能匹配](../job-resume-intelligent-matching-fanhan/SKILL.md) · `job-resume-intelligent-matching-fanhan` | 双向查库、相关信息挖掘、审核与受众话术 |
+| 历史/离线批量匹配：用户显式提供 Twenty/CSV/JSON 快照 | [职位 & 简历智能匹配](../job-resume-intelligent-matching-fanhan/SKILL.md) · `job-resume-intelligent-matching-fanhan` | 离线检索排序、审核与受众话术；不查询当前在线库 |
 
 材料同时包含公司介绍、JD与一个候选人时，优先单对审核，不扫描数据库凑推荐名单。
-只有公司介绍或只有JD时，先判断用户要审核指定人选还是寻找候选人；缺少目标才问一个最关键的问题。
+只有公司介绍或只有JD时，先判断用户要审核指定人选还是寻找候选人；需要在线查库时使用 Notion 子 Skill，缺少目标才问一个最关键的问题。
 用户只要目录或用法时，介绍上述能力与输入方式即可。
 
 ## 衔接与验收
 
 1. 恢复已有目标与事实，不要求用户重复上传已收到的材料。
-2. 只读取当前分支所需的子 Skill。子 Skill 未安装或路径不可用时，指出具体缺项；不冒充执行。
+2. 只读取当前分支所需的子 Skill。子 Skill 未安装或路径不可用时，指出具体缺项；不冒充执行。在线查库不得因 Notion 子 Skill 缺失而改用 Twenty/`recruiting-crm`，应停止并报告缺口。
 3. 检索方向、受众、已补全的证据及已有兴趣、推荐同意与实际进展一起交给单对审核：JD找人默认给公司，简历找岗默认给候选人。指定受众优先；独立审核未指定时按子 Skill 给双方草稿。
 4. 正式推荐前审核入选组合。检索分数不是审核结论；只让高匹配组合进入推荐名单。低匹配或待确认时，保留理由并交付子 Skill 的告知或补问草稿，不暗中换人。
 5. 按用户要求与子 Skill 的交付格式给报告和话术，内部报告不混入对外可复制文本；用户明确只要结论时遵从该范围。生成话术不等于发送；读取、发群、写回数据库各自遵守已有授权。
