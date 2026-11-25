@@ -1,0 +1,19 @@
+{
+  "name": "@hedgeho9/fanhan-ntn",
+  "version": "0.3.0",
+  "description": "泛函招聘 Notion 版 CLI：筛选交给 CLI，判断交给大模型",
+  "type": "module",
+  "bin": {
+    "fanhan-ntn": "bin/fanhan-ntn.mjs"
+  },
+  "files": [
+    "bin",
+    "src"
+  ],
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "start": "node bin/fanhan-ntn.mjs"
+  }
+}
