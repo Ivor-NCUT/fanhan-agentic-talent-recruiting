@@ -11,6 +11,7 @@
 | [泛函 Agentic 人才招聘](skills/fanhan-agentic-talent-recruiting/SKILL.md) · `fanhan-agentic-talent-recruiting` | 招聘问题、已有材料或需要衔接多个步骤 | 选择适用子 Skill 并执行 |
 | [职位简历匹配度审核](skills/job-resume-match-audit/SKILL.md) · `job-resume-match-audit` | 公司介绍 + 一个JD + 一位候选人的简历及相关信息；可指定受众 | 匹配度与理由；高匹配推荐、低匹配委婉告知或待确认补问 |
 | [职位 & 简历智能匹配](skills/job-resume-intelligent-matching-fanhan/SKILL.md) · `job-resume-intelligent-matching-fanhan` | JD查候选人库；简历查在招岗位库；批量检索排序 | 相关信息挖掘、审核后排序及公司版/候选人版话术 |
+| [Notion 版检索与匹配](skills/fanhan-recruiting-notion/SKILL.md) · `fanhan-recruiting-notion` | 数据在 Notion 三张表（候选人 / 职位 JD / 公司）时的双向检索与匹配 | 可复现的匹配分数、档位与独立概率项；可写回关系字段 |
 
 JD找人时挖掘候选人的工作证据，向公司推荐候选人；简历找岗时取得公司资料与完整JD，挖掘相关业务信息，向候选人推荐公司和岗位。两条路径在正式推荐前使用同一个审核子 Skill。已指定组合时直接审核。
 
@@ -54,6 +55,22 @@ npx skills add Ivor-NCUT/fanhan-agentic-talent-recruiting --skill job-resume-mat
 - 工作区 URL、OAuth、API key、业务记录和附件保留在用户本地配置或 CRM，不写入本仓库。`recruiting-crm` 的平台实现保持外部依赖，不复制其 AGPL-3.0 内容。
 - 已有本地 JSON/CSV 快照仍可分析，需标注来源与时效。连接失败不自动回退旧 CRM，也不能把第一页结果当成完整候选池。
 - 本次升级更新 Skill 的查询流程；不会迁移业务数据、创建字段、触发生产匹配或自动写回/发送消息。
+
+## Notion 版检索与匹配（可选数据源）
+
+数据在 Notion 而不是 Twenty 时，用独立的 [fanhan-ntn CLI](scripts/fanhan-ntn/README.md) 走另一条通路：
+
+```bash
+cd scripts/fanhan-ntn && npm link
+fanhan-ntn status
+fanhan-ntn sync
+fanhan-ntn match --job "<职位名>" --top 10 --max-records 100
+fanhan-ntn match --candidate-json ./candidate.json --top 10
+```
+
+与 `run_match.py` 的分工：`run_match.py` 面向 Twenty 导出的规范化 JSON，语义分是关键词代理、LLM 分是占位；`fanhan-ntn` 直接读 Notion 三表，判断全部交给判断模型（Perplexity Decider），CLI 只做取数、硬性排除与召回，不产生任何加权分数。
+
+两条通路共享同一套边界：不编造材料里没有的经历，`--top` 不等于推荐名单，写回需显式 `--yes`，生成文案不等于发送。
 
 ## 怎样使用审核 Skill
 
